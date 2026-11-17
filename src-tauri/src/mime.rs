@@ -258,7 +258,7 @@ pub fn decode_mutf7(s: &str) -> String {
             out.push('&');
         } else {
             let mut b64 = chunk.replace(',', "/");
-            while b64.len() % 4 != 0 {
+            while !b64.len().is_multiple_of(4) {
                 b64.push('=');
             }
             match STANDARD.decode(b64) {

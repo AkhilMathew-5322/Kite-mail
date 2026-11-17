@@ -30,7 +30,9 @@ fn raw_session() -> Raw {
 
 fn raw_session_for(user: &str) -> Raw {
     let tls = native_tls::TlsConnector::new().unwrap();
-    let client = imap::connect(("localhost", 993), "localhost", &tls).unwrap();
+    let tcp = std::net::TcpStream::connect(("localhost", 993)).unwrap();
+    let mut client = imap::Client::new(tls.connect("localhost", tcp).unwrap());
+    client.read_greeting().unwrap();
     client.login(user, "secret123").map_err(|(e, _)| e).unwrap()
 }
 
@@ -75,9 +77,9 @@ fn end_to_end_imap_smtp() {
 
     let mut raw = raw_session();
     wipe(&mut raw);
-    raw.append("INBOX", SAMPLE).unwrap();
-    raw.append("INBOX", plain("first", "Sun, 15 Nov 2026 09:00:00 +0000")).unwrap();
-    raw.append("INBOX", plain("second", "Tue, 17 Nov 2026 09:00:00 +0000")).unwrap();
+    raw.append("INBOX", SAMPLE).finish().unwrap();
+    raw.append("INBOX", &plain("first", "Sun, 15 Nov 2026 09:00:00 +0000")).finish().unwrap();
+    raw.append("INBOX", &plain("second", "Tue, 17 Nov 2026 09:00:00 +0000")).finish().unwrap();
     raw.create("Projects").unwrap();
     raw.create("Projects/TLR").unwrap();
 
@@ -91,6 +93,16 @@ fn end_to_end_imap_smtp() {
     let f: Vec<_> = folders.iter().map(|f| (f.display.as_str(), f.special.as_str(), f.depth)).collect();
     assert_eq!(&f[..4], &[("Inbox", "inbox", 0), ("Drafts", "drafts", 0), ("Sent", "sent", 0), ("Trash", "trash", 0)]);
     assert!(f.contains(&("TLR", "", 1)));
+
+    // Server-side search finds mail that was never downloaded, and adds it to the cache
+    let found = st.search_server(&acct, "INBOX", "second", 50).unwrap();
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].subject.contains("second"));
+    assert_eq!(st.db.list_messages(acct.id, "INBOX", 100).unwrap().len(), 1);
+    assert!(st.search_server(&acct, "INBOX", "no-such-words-anywhere", 50).unwrap().is_empty());
+    // quotes / backslashes / non-ASCII must not break the IMAP command
+    assert!(st.search_server(&acct, "INBOX", r#"he said "hi" \ ok"#, 50).is_ok());
+    assert!(st.search_server(&acct, "INBOX", "عربي", 50).is_ok());
 
     // Sync
     st.sync_folder(&acct, "INBOX", 100).unwrap();
@@ -138,7 +150,7 @@ fn end_to_end_imap_smtp() {
     assert_eq!(moved[0].subject, "Café invoice");
 
     // Offline cache: bodies prefetched, then readable from cache
-    assert_eq!(st.prefetch_bodies(&acct, "Projects/TLR", 25).unwrap(), 1);
+    assert_eq!(st.prefetch_bodies(&acct, "Projects/TLR", 25, 2_000_000).unwrap(), 1);
     assert_eq!(st.db.search(Some(acct.id), "Invoice attached", 10).unwrap().len(), 1, "body text searchable");
 
     // Send a reply with a local attachment, then forward with original attachments
@@ -205,8 +217,8 @@ fn end_to_end_phase1_features() {
     }
     let mut raw = raw_session_for("tester2@localhost");
     wipe(&mut raw);
-    raw.append("INBOX", plain("keep-me", "Sun, 15 Nov 2026 09:00:00 +0000")).unwrap();
-    raw.append("INBOX", SAMPLE).unwrap();
+    raw.append("INBOX", &plain("keep-me", "Sun, 15 Nov 2026 09:00:00 +0000")).finish().unwrap();
+    raw.append("INBOX", SAMPLE).finish().unwrap();
 
     let st = AppState::new(Db::memory());
     let mut acct = account(0);
@@ -288,7 +300,7 @@ fn end_to_end_phase1_features() {
     let t = std::thread::spawn(|| {
         std::thread::sleep(std::time::Duration::from_millis(700));
         let mut r = raw_session_for("tester2@localhost");
-        r.append("INBOX", plain("pushed", "Tue, 17 Nov 2026 09:00:00 +0000")).unwrap();
+        r.append("INBOX", &plain("pushed", "Tue, 17 Nov 2026 09:00:00 +0000")).finish().unwrap();
     });
     let started = std::time::Instant::now();
     let changed = st.idle_wait(&mut conn, &acct, &inbox_name, std::time::Duration::from_secs(20)).unwrap();
@@ -386,7 +398,7 @@ fn end_to_end_nextcloud() {
     // ---- backup to Nextcloud with retention (keep 2)
     let mut raw = raw_session_for("tester3@localhost");
     wipe(&mut raw);
-    raw.append("INBOX", plain("backup-me", "Sun, 15 Nov 2026 09:00:00 +0000")).unwrap();
+    raw.append("INBOX", &plain("backup-me", "Sun, 15 Nov 2026 09:00:00 +0000")).finish().unwrap();
     let mut acct = account(0);
     acct.email = "tester3@localhost".into();
     acct.username = "tester3@localhost".into();

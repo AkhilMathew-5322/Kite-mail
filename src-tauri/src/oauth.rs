@@ -8,7 +8,11 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+
+/// Set by the "Cancel" button while the app waits for the browser sign-in.
+pub static CANCEL: AtomicBool = AtomicBool::new(false);
 
 pub struct Provider {
     pub auth_url: String,
@@ -112,7 +116,11 @@ pub fn authorize(
     open_browser(url.as_str())?;
 
     let deadline = Instant::now() + Duration::from_secs(300);
+    CANCEL.store(false, Ordering::SeqCst);
     let code = loop {
+        if CANCEL.swap(false, Ordering::SeqCst) {
+            return Err("Sign-in cancelled".into());
+        }
         if Instant::now() > deadline {
             return Err("Sign-in timed out after 5 minutes".into());
         }

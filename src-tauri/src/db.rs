@@ -230,6 +230,7 @@ impl Db {
         let c = self.c();
         c.execute("DELETE FROM messages WHERE account_id=?1", [id]).map_err(e)?;
         c.execute("DELETE FROM folders WHERE account_id=?1", [id]).map_err(e)?;
+        c.execute("DELETE FROM drafts WHERE json_extract(json, '$.account_id')=?1", [id]).map_err(e)?;
         c.execute("DELETE FROM accounts WHERE id=?1", [id]).map_err(e)?;
         Ok(())
     }
@@ -698,6 +699,18 @@ impl Db {
         let mut st = c.prepare("SELECT id,json FROM drafts WHERE pending=1 ORDER BY updated DESC").map_err(e)?;
         let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(e)?;
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(e)
+    }
+
+    pub fn summaries_for(&self, account_id: i64, folder: &str, uids: &[u32]) -> R<Vec<MsgSummary>> {
+        let c = self.c();
+        let mut st = c.prepare(&format!("SELECT {SUMMARY_COLS} FROM messages WHERE account_id=?1 AND folder=?2 AND uid=?3")).map_err(e)?;
+        let mut out = Vec::with_capacity(uids.len());
+        for uid in uids {
+            if let Ok(m) = st.query_row(params![account_id, folder, uid], row_to_summary) {
+                out.push(m);
+            }
+        }
+        Ok(out)
     }
 
     pub fn search(&self, account_id: Option<i64>, query: &str, limit: u32) -> R<Vec<MsgSummary>> {

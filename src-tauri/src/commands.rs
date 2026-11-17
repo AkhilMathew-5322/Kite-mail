@@ -183,7 +183,8 @@ pub async fn prefetch_bodies(state: State<'_, Shared>, account_id: i64, folder: 
     let st = state.inner().clone();
     blocking(move || {
         let acct = st.db.account(account_id)?;
-        st.prefetch_bodies(&acct, &folder, 25)
+        // Phones: fewer and smaller bodies to save mobile data and storage.
+        if cfg!(mobile) { st.prefetch_bodies(&acct, &folder, 10, 512 * 1024) } else { st.prefetch_bodies(&acct, &folder, 25, 2_000_000) }
     })
     .await
 }
@@ -236,6 +237,20 @@ pub async fn search(state: State<'_, Shared>, account_id: Option<i64>, query: St
     state.db.search(account_id, query.trim(), 300)
 }
 
+/// Full search of one folder on the mail server, including mail not downloaded yet.
+#[tauri::command]
+pub async fn search_server(state: State<'_, Shared>, account_id: i64, folder: String, query: String) -> Result<Vec<MsgSummary>, String> {
+    if query.trim().len() < 2 {
+        return Ok(vec![]);
+    }
+    let st = state.inner().clone();
+    blocking(move || {
+        let acct = st.db.account(account_id)?;
+        st.search_server(&acct, &folder, query.trim(), 300)
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn send_message(state: State<'_, Shared>, draft: Draft) -> Result<(), String> {
     let st = state.inner().clone();
@@ -257,10 +272,41 @@ pub async fn pick_files(app: AppHandle) -> Result<Vec<String>, String> {
     .await
 }
 
-fn safe_file_name(name: &str) -> String {
+pub fn safe_file_name(name: &str) -> String {
     let cleaned: String = name.chars().map(|c| if "\\/:*?\"<>|".contains(c) || c.is_control() { '_' } else { c }).collect();
-    let cleaned = cleaned.trim().trim_matches('.').to_string();
-    if cleaned.is_empty() { "attachment".into() } else { cleaned }
+    let cleaned = cleaned.trim().trim_matches('.').trim().to_string();
+    if cleaned.is_empty() {
+        return "attachment".into();
+    }
+    // Windows device names can't be used as file names (even with an extension)
+    let stem = cleaned.split('.').next().unwrap_or("").to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ((stem.starts_with("COM") || stem.starts_with("LPT")) && stem.len() == 4 && stem.as_bytes()[3].is_ascii_digit());
+    let mut out = if reserved { format!("_{cleaned}") } else { cleaned };
+    if out.chars().count() > 150 {
+        // keep the extension, shorten the name
+        let ext = out.rsplit_once('.').map(|(_, e)| e.to_string()).filter(|e| e.len() <= 10);
+        out = out.chars().take(140).collect();
+        if let Some(e) = ext { out = format!("{out}.{e}"); }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn safe_names() {
+        use super::safe_file_name as s;
+        assert_eq!(s("../../evil.txt"), "_.._evil.txt");
+        assert_eq!(s("CON"), "_CON");
+        assert_eq!(s("nul.txt"), "_nul.txt");
+        assert_eq!(s("com1.log"), "_com1.log");
+        assert_eq!(s("Computer.pdf"), "Computer.pdf");
+        assert_eq!(s("  ...  "), "attachment");
+        assert_eq!(s("a<b>:c|d?.pdf"), "a_b__c_d_.pdf");
+        assert_eq!(s("عقد.pdf"), "عقد.pdf");
+        assert!(s(&format!("{}.pdf", "x".repeat(400))).ends_with(".pdf"));
+    }
 }
 
 #[tauri::command]
@@ -341,12 +387,17 @@ pub async fn open_draft(state: State<'_, Shared>, account_id: i64, folder: Strin
 /// Drafts that were saved locally but never reached the server (e.g. app closed while offline).
 #[tauri::command]
 pub async fn pending_drafts(state: State<'_, Shared>) -> Result<Vec<serde_json::Value>, String> {
+    let accounts: Vec<i64> = state.db.accounts()?.into_iter().map(|a| a.id).collect();
     Ok(state
         .db
         .pending_drafts()?
         .into_iter()
         .filter_map(|(id, json)| {
             let mut v: serde_json::Value = serde_json::from_str(&json).ok()?;
+            // Skip drafts of accounts that no longer exist (removed before the draft synced).
+            if !v["account_id"].as_i64().is_some_and(|a| accounts.contains(&a)) {
+                return None;
+            }
             v["local_draft_id"] = id.into();
             Some(v)
         })
@@ -628,4 +679,10 @@ pub async fn pair_import(state: State<'_, Shared>, code: String) -> Result<crate
 #[tauri::command]
 pub async fn file_sizes(paths: Vec<String>) -> Result<Vec<u64>, String> {
     Ok(paths.iter().map(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0)).collect())
+}
+
+/// Stops a browser sign-in that the app is currently waiting for.
+#[tauri::command]
+pub fn cancel_sign_in() {
+    crate::oauth::CANCEL.store(true, std::sync::atomic::Ordering::SeqCst);
 }

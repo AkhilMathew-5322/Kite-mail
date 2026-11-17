@@ -11,7 +11,7 @@ use std::time::Duration;
 fn parse_list(s: &str) -> Result<Vec<Mailbox>, String> {
     split_addresses(s)
         .into_iter()
-        .map(|a| a.parse::<Mailbox>().map_err(|e| format!("Invalid address '{a}': {e}")))
+        .map(|a| a.parse::<Mailbox>().map_err(|_| format!("\"{a}\" is not a valid email address – check the To, Cc and Bcc fields")))
         .collect()
 }
 

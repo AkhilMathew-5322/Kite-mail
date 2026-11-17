@@ -135,10 +135,12 @@ function markDirty() {
 
 async function saveDraft(quiet = true) {
   const c = S.compose;
-  if (!c || c.saving || !c.dirty) return true;
+  if (!c || c.saving || c.sending || !c.dirty) return true;
   c.saving = true;
   clearTimeout(c.timer);
   $('#c-status').textContent = 'Saving draft…';
+  let done;
+  c.savePromise = new Promise((r) => { done = r; });
   try {
     const r = await invoke('save_draft', { draft: composePayload() });
     if (S.compose !== c) return true;
@@ -154,7 +156,7 @@ async function saveDraft(quiet = true) {
     $('#c-status').textContent = 'Draft not saved';
     if (!quiet) toast(errText(e), 'error');
     return false;
-  } finally { c.saving = false; }
+  } finally { c.saving = false; c.savePromise = null; done(); }
 }
 
 async function closeCompose() {
@@ -193,7 +195,9 @@ async function discardDraft(close = true) {
 
 async function sendCompose() {
   const btn = $('#c-send');
-  const draft = composePayload();
+  const c = S.compose;
+  if (!c || c.sending) return;
+  let draft = composePayload();
   if (!draft.to.trim() && !draft.cc.trim() && !draft.bcc.trim()) { toast('Add at least one recipient', 'error'); $('#c-to').focus(); return; }
   if (!draft.subject.trim() && !(await confirmBox('Send without a subject?', 'Send'))) return;
   if (S.nc.enabled && draft.attachments.length) {
@@ -209,8 +213,13 @@ async function sendCompose() {
     }
   }
   btn.disabled = true;
-  clearTimeout(S.compose.timer);
+  c.sending = true;            // blocks autosave from re-creating the draft after it is sent
+  clearTimeout(c.timer);
   try {
+    if (c.savePromise) {       // an autosave is mid-flight: let it finish so we delete the right server draft
+      await c.savePromise;
+      draft = { ...composePayload(), link_large: draft.link_large };
+    }
     await withBusy(draft.link_large ? 'Uploading to Nextcloud & sending…' : 'Sending…', () => invoke('send_message', { draft }));
     $('#compose').close();
     S.compose = null;
@@ -221,7 +230,7 @@ async function sendCompose() {
       if (m) { m.answered = true; renderVisible(true); }
     }
     if (S.cur && ['drafts', 'sent'].includes(folderOf(S.cur.accountId, S.cur.folder)?.special)) syncCurrent(true);
-  } catch (e) { toast(errText(e), 'error'); }
+  } catch (e) { c.sending = false; toast(errText(e), 'error'); }
   finally { btn.disabled = false; }
 }
 
@@ -271,7 +280,6 @@ function hideAc() { acMenu.hidden = true; acTarget = null; }
 function pickAc(i) {
   const s = acItems[i];
   if (!s || !acTarget) return;
-  const parts = acTarget.value.split(/([,;])/);
   const kept = splitAddrs(acTarget.value);
   kept.pop();
   kept.push(fmtAddr(s.name, s.email));
@@ -279,7 +287,6 @@ function pickAc(i) {
   acTarget.focus();
   hideAc();
   markDirty();
-  void parts;
 }
 acMenu.addEventListener('mousedown', (e) => { const it = e.target.closest('.ac-item'); if (it) { e.preventDefault(); pickAc(Number(it.dataset.i)); } });
 for (const id of ['#c-to', '#c-cc', '#c-bcc']) {

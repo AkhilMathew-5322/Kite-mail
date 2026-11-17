@@ -63,9 +63,19 @@ function toast(msg, kind = 'info', action = null) {
     b.onclick = () => { t.remove(); action.run(); };
     t.appendChild(b);
   }
-  $('#toasts').appendChild(t);
+  toastHost().appendChild(t);
   requestAnimationFrame(() => t.classList.add('show'));
-  setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, kind === 'error' ? 9000 : action ? 8000 : 3500);
+  setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, action?.ttl ?? (kind === 'error' ? 9000 : action ? 8000 : 3500));
+  return t;
+}
+
+/** Modal dialogs sit above the page, so toasts raised while one is open go inside it. */
+function toastHost() {
+  const dlg = [...document.querySelectorAll('dialog[open]')].filter((d) => d.matches(':modal')).pop();
+  if (!dlg) return $('#toasts');
+  let host = dlg.querySelector(':scope > .toasts');
+  if (!host) { host = document.createElement('div'); host.className = 'toasts'; dlg.appendChild(host); }
+  return host;
 }
 
 let busy = 0;

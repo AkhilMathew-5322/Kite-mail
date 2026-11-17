@@ -4,6 +4,19 @@ Kite Mail is a lightweight email client for **Windows, Linux and Android**. It's
 
 **Supported accounts:** Microsoft 365 (OAuth), Gmail (OAuth), and any provider that supports IMAP and SMTP.
 
+## What's new in 0.3.1 (QA + security release)
+- **Security:** `cargo audit` reports **0 vulnerabilities**. SQLite, zip and the IMAP library were upgraded (the old IMAP parser used an unsound number-parsing crate). The few remaining "unmaintained" notices come from Tauri's own Linux stack (GTK3/D-Bus) and are listed with reasons in `src-tauri/.cargo/audit.toml`. CI now fails on any new advisory.
+- **Search on the server:** after a local search, click *Search all of "Folder" on the server* to find mail that was never downloaded.
+- **More reliable push:** a dead connection is noticed within 5 minutes (for example after sleep or a Wi-Fi change), retries are capped at 2 minutes, and a crashed push thread restarts by itself.
+- **Safer deleting:** permanently deleting a message never removes other messages that another mail app has marked for deletion.
+- **Sign-in can be cancelled** while the browser window is open.
+- **Refresh (F5)** also re-reads the folder list, so new or renamed folders appear.
+- **Pairing QR** lists every network address of the computer, and the phone uses the first one that answers.
+- Drafts: sending while an autosave is running no longer leaves a stray draft behind, and drafts of removed accounts are cleaned up.
+- Messages and errors now appear on top of open dialogs, and error texts are written in plain language.
+- Android downloads fewer and smaller messages in the background to save data.
+- Hardening: emails can no longer redirect the reader (`<meta refresh>`, `<base>`, embedded frames are stripped), Windows reserved file names (CON, NUL…) are made safe when saving attachments, and a malformed email can no longer crash the whole app.
+
 ## What's new in 0.3 (Phase 2)
 
 | Area | What you get |
@@ -100,9 +113,9 @@ Every push to `main` builds the Windows installer, the Linux packages and the An
 
 **Permanent download links:** tag a version and GitHub creates a **Release** with every installer attached:
 ```bash
-git tag v0.3.0 && git push origin v0.3.0
+git tag v0.3.1 && git push origin v0.3.1
 ```
-You can also use **Releases → Draft a new release → Choose a tag → `v0.3.0`**.
+You can also use **Releases → Draft a new release → Choose a tag → `v0.3.1`**.
 
 ---
 
@@ -144,6 +157,7 @@ If a sign-in expires, an ⚠ and a **Reconnect** button appear next to the accou
 
 - Emails are shown in a sandbox where scripts can't run, and remote images (which are often used as trackers) are blocked until you allow them.
 - Nothing is sent anywhere except your mail servers, plus LanguageTool when you click **Check**.
+- Dependencies are checked against the RustSec advisory database on every build (`cargo audit --deny warnings`).
 
 ## Performance notes
 - Push mail uses one sleeping IMAP connection per account. The app wakes only when the server reports a change, so idle CPU is close to zero (measured at about 0.03% over 60 seconds).
@@ -191,7 +205,8 @@ src-tauri/src/
 ## Tests
 ```bash
 cd src-tauri
-cargo test                       # 20 unit tests (incl. a full pairing over the network)
+cargo test                       # 21 unit tests (incl. a full pairing over the network)
+cargo audit                      # dependency security check (policy: .cargo/audit.toml)
 LM_IT=1 cargo test it_tests      # 3 end-to-end tests against real servers:
                                  #   IMAPS localhost:993 + SMTPS :4650 (Dovecot + aiosmtpd),
                                  #   users tester@, tester2@, tester3@localhost / secret123

@@ -6,7 +6,8 @@ use crate::mime;
 use crate::models::*;
 use crate::oauth;
 use crate::secrets;
-use imap::types::{Flag, NameAttribute};
+use imap::types::Flag;
+use imap_proto::NameAttribute;
 use std::collections::{HashMap, HashSet};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
@@ -14,10 +15,15 @@ use std::time::{Duration, Instant};
 
 type Session = imap::Session<native_tls::TlsStream<TcpStream>>;
 
+const READ_TIMEOUT: Duration = Duration::from_secs(120);
+
 pub struct Conn {
+    sock: TcpStream,
     sess: Session,
     selected: Option<String>,
     has_move: bool,
+    /// UIDPLUS: lets us expunge only our own messages (UID EXPUNGE).
+    has_uidplus: bool,
 }
 
 impl Conn {
@@ -93,7 +99,17 @@ impl AppState {
 
     /// Runs `f` with a live IMAP connection for the account. Reconnects once if the
     /// connection dropped (timeouts, server restarts, expired OAuth sessions).
-    fn with_imap<T>(&self, acct: &Account, mut f: impl FnMut(&mut Conn) -> imap::Result<T>) -> Result<T, String> {
+    fn with_imap<T>(&self, acct: &Account, f: impl FnMut(&mut Conn) -> imap::Result<T>) -> Result<T, String> {
+        self.with_imap_opts(acct, true, f)
+    }
+
+    /// For non-idempotent commands (APPEND): never re-run after a dropped connection, because
+    /// the server may already have executed it (would create a duplicate draft / sent copy).
+    fn with_imap_once<T>(&self, acct: &Account, f: impl FnMut(&mut Conn) -> imap::Result<T>) -> Result<T, String> {
+        self.with_imap_opts(acct, false, f)
+    }
+
+    fn with_imap_opts<T>(&self, acct: &Account, allow_retry: bool, mut f: impl FnMut(&mut Conn) -> imap::Result<T>) -> Result<T, String> {
         let slot = self.sessions.lock().unwrap().entry(acct.id).or_default().clone();
         let mut guard = slot.lock().unwrap_or_else(|p| p.into_inner());
         for attempt in 0..2 {
@@ -104,16 +120,16 @@ impl AppState {
             let conn = guard.as_mut().unwrap();
             match f(conn) {
                 Ok(v) => {
-                    while conn.sess.unsolicited_responses.try_recv().is_ok() {}
+                    let _ = conn.sess.take_all_unsolicited();
                     return Ok(v);
                 }
                 Err(e) => {
                     let retryable = matches!(e, imap::Error::Io(_) | imap::Error::ConnectionLost | imap::Error::Bad(_) | imap::Error::Parse(_));
                     *guard = None;
-                    if attempt == 0 && retryable {
+                    if attempt == 0 && retryable && allow_retry {
                         continue;
                     }
-                    return Err(format!("IMAP error: {e}"));
+                    return Err(friendly_imap_error(&e));
                 }
             }
         }
@@ -136,7 +152,16 @@ impl AppState {
                             NameAttribute::NoInferiors => "\\Noinferiors".to_string(),
                             NameAttribute::Marked => "\\Marked".to_string(),
                             NameAttribute::Unmarked => "\\Unmarked".to_string(),
-                            NameAttribute::Custom(s) => s.to_string(),
+                            NameAttribute::All => "\\All".to_string(),
+                            NameAttribute::Archive => "\\Archive".to_string(),
+                            NameAttribute::Drafts => "\\Drafts".to_string(),
+                            NameAttribute::Flagged => "\\Flagged".to_string(),
+                            NameAttribute::Junk => "\\Junk".to_string(),
+                            NameAttribute::Sent => "\\Sent".to_string(),
+                            NameAttribute::Trash => "\\Trash".to_string(),
+                            NameAttribute::Extension(s) => s.to_string(),
+                            #[allow(unreachable_patterns)]
+                            _ => String::new(),
                         })
                         .collect();
                     (n.name().to_string(), n.delimiter().unwrap_or("/").to_string(), attrs)
@@ -182,32 +207,7 @@ impl AppState {
             let new: Vec<u32> = sorted.iter().copied().filter(|u| !cached_now.contains(u)).collect();
             let existing: Vec<u32> = sorted.iter().copied().filter(|u| cached_now.contains(u)).collect();
 
-            let mut headers = Vec::new();
-            for chunk in new.chunks(100) {
-                let fetches = c.sess.uid_fetch(uid_set(chunk), HEADER_QUERY)?;
-                for f in fetches.iter() {
-                    let Some(uid) = f.uid else { continue };
-                    let h = mime::parse_headers(f.header().unwrap_or(b""));
-                    let (seen, flagged, answered) = flag_bits(f.flags());
-                    let date = if h.date > 0 { h.date } else { f.internal_date().map(|d| d.timestamp()).unwrap_or(0) };
-                    headers.push(MsgSummary {
-                        account_id: acct.id,
-                        folder: folder.to_string(),
-                        uid,
-                        subject: h.subject,
-                        from_name: h.from_name,
-                        from_addr: h.from_addr,
-                        to: h.to,
-                        date,
-                        size: f.size.unwrap_or(0),
-                        seen,
-                        flagged,
-                        answered,
-                        has_attach: h.has_attach,
-                        preview: String::new(),
-                    });
-                }
-            }
+            let headers = fetch_summaries(c, acct.id, folder, &new)?;
             let mut flags = Vec::new();
             for chunk in existing.chunks(500) {
                 let fetches = c.sess.uid_fetch(uid_set(chunk), "(UID FLAGS)")?;
@@ -232,9 +232,33 @@ impl AppState {
         Ok(())
     }
 
+    /// Searches a whole folder on the server (not just the downloaded part) for `query`
+    /// in headers and body. Matches are added to the local cache and returned newest first.
+    pub fn search_server(&self, acct: &Account, folder: &str, query: &str, limit: usize) -> Result<Vec<MsgSummary>, String> {
+        let q: String = query.chars().filter(|ch| !ch.is_control()).collect::<String>().replace('\\', "\\\\").replace('"', "\\\"");
+        if q.trim().is_empty() {
+            return Ok(vec![]);
+        }
+        let criteria = if q.is_ascii() { format!("TEXT \"{q}\"") } else { format!("CHARSET UTF-8 TEXT \"{q}\"") };
+        let cached = self.db.cached_uids(acct.id, folder)?;
+        let (uids, fresh) = self.with_imap(acct, |c| {
+            c.sess.select(folder)?;
+            c.selected = Some(folder.to_string());
+            let mut uids: Vec<u32> = c.sess.uid_search(&criteria)?.into_iter().collect();
+            uids.sort_unstable_by(|a, b| b.cmp(a));
+            uids.truncate(limit);
+            let missing: Vec<u32> = uids.iter().copied().filter(|u| !cached.contains(u)).collect();
+            Ok((uids, fetch_summaries(c, acct.id, folder, &missing)?))
+        })?;
+        self.db.upsert_summaries(&fresh)?;
+        let mut out = self.db.summaries_for(acct.id, folder, &uids)?;
+        out.sort_by_key(|m| std::cmp::Reverse(m.date));
+        Ok(out)
+    }
+
     /// Downloads full bodies of recent messages so they can be read offline.
-    pub fn prefetch_bodies(&self, acct: &Account, folder: &str, count: u32) -> Result<u32, String> {
-        let uids = self.db.uids_without_body(acct.id, folder, 2_000_000, count)?;
+    pub fn prefetch_bodies(&self, acct: &Account, folder: &str, count: u32, max_size: u32) -> Result<u32, String> {
+        let uids = self.db.uids_without_body(acct.id, folder, max_size, count)?;
         if uids.is_empty() {
             return Ok(0);
         }
@@ -306,12 +330,12 @@ impl AppState {
                     } else {
                         c.sess.uid_copy(&set, t)?;
                         c.sess.uid_store(&set, "+FLAGS.SILENT (\\Deleted)")?;
-                        c.sess.expunge()?;
+                        expunge_set(c, &set)?;
                     }
                 }
                 _ => {
                     c.sess.uid_store(&set, "+FLAGS.SILENT (\\Deleted)")?;
-                    c.sess.expunge()?;
+                    expunge_set(c, &set)?;
                 }
             }
             Ok(())
@@ -331,7 +355,7 @@ impl AppState {
             } else {
                 c.sess.uid_copy(&set, target)?;
                 c.sess.uid_store(&set, "+FLAGS.SILENT (\\Deleted)")?;
-                c.sess.expunge()?;
+                expunge_set(c, &set)?;
             }
             Ok(())
         })?;
@@ -362,7 +386,7 @@ impl AppState {
         if acct.save_sent {
             if let Some(sent) = self.db.folder_by_special(acct.id, "sent")? {
                 let bytes = msg.formatted();
-                let _ = self.with_imap(acct, |c| c.sess.append_with_flags(&sent, &bytes, &[Flag::Seen]));
+                let _ = self.with_imap_once(acct, |c| c.sess.append(&sent, &bytes).flag(Flag::Seen).finish());
             }
         }
         if let Some(r) = &draft.reply_to_msg {
@@ -383,9 +407,7 @@ impl AppState {
         self.with_imap(acct, |c| {
             ensure_selected(c, folder)?;
             c.sess.uid_store(&set, "+FLAGS.SILENT (\\Deleted)")?;
-            if c.sess.uid_expunge(&set).is_err() {
-                c.sess.expunge()?;
-            }
+            expunge_set(c, &set)?;
             Ok(())
         })?;
         self.db.delete_messages(acct.id, folder, uids)
@@ -418,8 +440,8 @@ impl AppState {
             let msg = crate::smtp::build_draft(acct, &Draft { message_id: Some(message_id.clone()), ..clone_draft(d) }, extra)?;
             let bytes = msg.formatted();
             let mid = message_id.clone();
-            let uid = self.with_imap(acct, |c| {
-                c.sess.append_with_flags(&drafts_folder, &bytes, &[Flag::Seen, Flag::Draft])?;
+            let uid = self.with_imap_once(acct, |c| {
+                c.sess.append(&drafts_folder, &bytes).flags([Flag::Seen, Flag::Draft]).finish()?;
                 c.selected = None;
                 c.sess.select(&drafts_folder)?;
                 c.selected = Some(drafts_folder.clone());
@@ -511,14 +533,15 @@ impl AppState {
             // NOOP flushes anything that arrived between IDLE sessions
             c.sess.noop()?;
             let mut changed = false;
-            while c.sess.unsolicited_responses.try_recv().is_ok() {
+            if c.sess.take_all_unsolicited().len() > 0 {
                 changed = true;
             }
             if changed {
                 return Ok(true);
             }
-            let handle = c.sess.idle()?;
-            let outcome = handle.wait_with_timeout(timeout)?;
+            let outcome = c.sess.idle().timeout(timeout).keepalive(false).wait_while(imap::extensions::idle::stop_on_any);
+            let _ = c.sock.set_read_timeout(Some(READ_TIMEOUT));
+            let outcome = outcome?;
             Ok(matches!(outcome, imap::extensions::idle::WaitOutcome::MailboxChanged))
         })();
         match res {
@@ -617,7 +640,7 @@ impl AppState {
                     skipped += 1;
                 } else {
                     let fl: Vec<Flag> = flags.iter().filter_map(|f| parse_flag(f)).collect();
-                    conn.sess.append_with_flags(&target, raw, &fl).map_err(|e| format!("{display}: {e}"))?;
+                    conn.sess.append(&target, raw).flags(fl.iter().cloned()).finish().map_err(|e| format!("{display}: {e}"))?;
                     added += 1;
                 }
                 if i % 10 == 9 || i + 1 == messages.len() {
@@ -743,16 +766,50 @@ impl imap::Authenticator for XOAuth2<'_> {
     }
 }
 
+/// Fetches list-view summaries (headers, flags, size) for the given UIDs of the selected folder.
+fn fetch_summaries(c: &mut Conn, account_id: i64, folder: &str, uids: &[u32]) -> imap::Result<Vec<MsgSummary>> {
+    let mut headers = Vec::new();
+    for chunk in uids.chunks(100) {
+        let fetches = c.sess.uid_fetch(uid_set(chunk), HEADER_QUERY)?;
+        for f in fetches.iter() {
+            let Some(uid) = f.uid else { continue };
+            let h = mime::parse_headers(f.header().unwrap_or(b""));
+            let (seen, flagged, answered) = flag_bits(f.flags());
+            let date = if h.date > 0 { h.date } else { f.internal_date().map(|d| d.timestamp()).unwrap_or(0) };
+            headers.push(MsgSummary {
+                account_id,
+                folder: folder.to_string(),
+                uid,
+                subject: h.subject,
+                from_name: h.from_name,
+                from_addr: h.from_addr,
+                to: h.to,
+                date,
+                size: f.size.unwrap_or(0),
+                seen,
+                flagged,
+                answered,
+                has_attach: h.has_attach,
+                preview: String::new(),
+            });
+        }
+    }
+    Ok(headers)
+}
+
 pub fn connect(acct: &Account, auth: &Auth) -> Result<Conn, String> {
     let addr = (acct.imap_host.as_str(), acct.imap_port)
         .to_socket_addrs()
-        .map_err(|e| format!("Cannot resolve {}: {e}", acct.imap_host))?
+        .map_err(|_| format!("Can't find the mail server \"{}\" – check the server name and your internet connection", acct.imap_host))?
         .next()
-        .ok_or_else(|| format!("Cannot resolve {}", acct.imap_host))?;
+        .ok_or_else(|| format!("Can't find the mail server \"{}\"", acct.imap_host))?;
     let tcp = TcpStream::connect_timeout(&addr, Duration::from_secs(20))
-        .map_err(|e| format!("Cannot connect to {}:{}: {e}", acct.imap_host, acct.imap_port))?;
-    let _ = tcp.set_read_timeout(Some(Duration::from_secs(120)));
+        .map_err(|e| friendly_io(&e, &format!("the mail server ({})", acct.imap_host)))?;
+    let _ = tcp.set_read_timeout(Some(READ_TIMEOUT));
     let _ = tcp.set_write_timeout(Some(Duration::from_secs(60)));
+    // Second handle to the same socket: imap's IDLE clears the read timeout when it ends,
+    // and the session doesn't expose its stream, so we restore it through this one.
+    let sock = tcp.try_clone().map_err(|e| e.to_string())?;
     let tls = native_tls::TlsConnector::new().map_err(|e| e.to_string())?;
     let stream = tls.connect(&acct.imap_host, tcp).map_err(|e| format!("TLS error: {e}"))?;
     let mut client = imap::Client::new(stream);
@@ -764,8 +821,69 @@ pub fn connect(acct: &Account, auth: &Auth) -> Result<Conn, String> {
             .authenticate("XOAUTH2", &XOAuth2 { user: &acct.username, token: t })
             .map_err(|(e, _)| format!("IMAP sign-in failed: {e}. For Microsoft 365, check IMAP is enabled for the mailbox."))?,
     };
-    let has_move = sess.capabilities().map(|c| c.has_str("MOVE")).unwrap_or(false);
-    Ok(Conn { sess, selected: None, has_move })
+    let (has_move, has_uidplus) = sess
+        .capabilities()
+        .map(|c| (c.has_str("MOVE"), c.has_str("UIDPLUS")))
+        .unwrap_or((false, false));
+    Ok(Conn { sess, sock, selected: None, has_move, has_uidplus })
+}
+
+/// Permanently removes only the given UIDs. Plain EXPUNGE (servers without UIDPLUS) would also
+/// purge messages that another mail app marked \\Deleted but hadn't removed yet, so on such servers
+/// we first take back the \\Deleted flag from everything else and restore it afterwards.
+fn expunge_set(c: &mut Conn, set: &str) -> imap::Result<()> {
+    if c.has_uidplus {
+        c.sess.uid_expunge(set)?;
+        return Ok(());
+    }
+    let ours: HashSet<u32> = parse_uid_set(set);
+    let others: Vec<u32> = c.sess.uid_search("DELETED")?.into_iter().filter(|u| !ours.contains(u)).collect();
+    if !others.is_empty() {
+        c.sess.uid_store(uid_set(&others), "-FLAGS.SILENT (\\Deleted)")?;
+    }
+    let res = c.sess.expunge().map(|_| ());
+    if !others.is_empty() {
+        c.sess.uid_store(uid_set(&others), "+FLAGS.SILENT (\\Deleted)")?;
+    }
+    res
+}
+
+fn parse_uid_set(set: &str) -> HashSet<u32> {
+    let mut out = HashSet::new();
+    for part in set.split(',') {
+        match part.split_once(':') {
+            Some((a, b)) => {
+                if let (Ok(a), Ok(b)) = (a.parse::<u32>(), b.parse::<u32>()) {
+                    out.extend(a.min(b)..=a.max(b));
+                }
+            }
+            None => {
+                if let Ok(u) = part.parse() {
+                    out.insert(u);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Human-friendly IMAP errors (no "os error 111").
+fn friendly_imap_error(e: &imap::Error) -> String {
+    match e {
+        imap::Error::Io(io) => friendly_io(io, "the mail server"),
+        imap::Error::ConnectionLost => "The connection to the mail server was lost – it will reconnect automatically".into(),
+        imap::Error::No(msg) => format!("The mail server refused: {}", msg.information.trim()),
+        other => format!("Mail server error: {other}"),
+    }
+}
+
+pub fn friendly_io(e: &std::io::Error, what: &str) -> String {
+    use std::io::ErrorKind::*;
+    match e.kind() {
+        ConnectionRefused | ConnectionReset | ConnectionAborted | NotConnected => format!("Can't reach {what} – it may be down, or your internet connection is offline"),
+        TimedOut | WouldBlock => format!("{what} didn't respond in time – check your internet connection"),
+        _ => format!("Network problem talking to {what}: {e}"),
+    }
 }
 
 fn ensure_selected(c: &mut Conn, folder: &str) -> imap::Result<()> {
@@ -860,7 +978,7 @@ pub fn organize_folders(account_id: i64, raw: Vec<(String, String, Vec<String>)>
         if sp.is_empty() { other.push(f) } else { special.push(f) }
     }
     special.sort_by_key(|f| SPECIAL_ORDER.iter().position(|s| *s == f.special).unwrap_or(99));
-    other.sort_by(|a, b| mime::decode_mutf7(&a.name).to_lowercase().cmp(&mime::decode_mutf7(&b.name).to_lowercase()));
+    other.sort_by_cached_key(|f| mime::decode_mutf7(&f.name).to_lowercase());
     special.into_iter().chain(other).enumerate().map(|(i, f)| (f, i as i64)).collect()
 }
 

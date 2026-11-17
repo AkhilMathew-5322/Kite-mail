@@ -23,7 +23,7 @@ $('#btn-theme').onclick = async () => {
 document.addEventListener('keydown', (e) => {
   if (document.querySelector('dialog[open]')) return;
   const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName);
-  if (e.key === 'F5') { e.preventDefault(); syncCurrent(); return; }
+  if (e.key === 'F5') { e.preventDefault(); refreshAll(); return; }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') { e.preventDefault(); openCompose(); return; }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f' && S.tab === 'mail') { e.preventDefault(); $('#search').focus(); return; }
   if (typing || S.tab !== 'mail' || e.ctrlKey || e.metaKey || e.altKey) return;
@@ -108,11 +108,12 @@ async function init() {
   loadTodos();
   if (!S.accounts.length) { renderList(); if (S.mobile) mobileOnboarding(); else openAccountDialog(); return; }
   await openFirstInbox();
-  for (const a of S.accounts) if (a.id !== S.cur?.accountId) refreshAccount(a.id);
+  for (const a of S.accounts) refreshAccount(a.id);
   recoverDrafts();
   // Inbox changes arrive instantly via push (IMAP IDLE); other open folders refresh every 10 minutes.
   setInterval(() => {
     if (S.cur && !S.searching && folderOf(S.cur.accountId, S.cur.folder)?.special !== 'inbox') syncCurrent(true);
+    for (const a of S.accounts) refreshAccount(a.id);
     updateTaskBadge();
   }, 10 * 60 * 1000);
   setInterval(updateTaskBadge, 60 * 1000);

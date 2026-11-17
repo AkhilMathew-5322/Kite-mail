@@ -73,7 +73,7 @@ async function refreshAccount(accountId, loud = false) {
 }
 
 async function reconnect(accountId) {
-  toast('A browser window opened – sign in there to reconnect.');
+  const waiting = toast('A browser window opened – sign in there to reconnect.', 'info', { label: 'Cancel', ttl: 300000, run: () => invoke('cancel_sign_in') });
   try {
     await withBusy('Waiting for sign-in…', () => invoke('reconnect_account', { accountId }));
     delete S.errors[accountId];
@@ -81,6 +81,7 @@ async function reconnect(accountId) {
     await reloadFolders(accountId);
     if (S.cur?.accountId === accountId) syncCurrent();
   } catch (e) { toast(errText(e), 'error'); }
+  finally { waiting.remove(); }
 }
 
 async function removeAccount(accountId) {
@@ -107,7 +108,7 @@ function openFirstInbox() {
 // ------------------------------------------------------------------ list
 async function selectFolder(accountId, folder) {
   S.cur = { accountId, folder };
-  S.searching = false;
+  S.searching = false; S.searchServer = false; S.searchQuery = '';
   $('#search').value = '';
   S.selected.clear();
   showReader(null);
@@ -153,7 +154,7 @@ const rowH = () => (S.settings.density === 'compact' ? 50 : 78);
 function renderList() {
   const a = S.cur && acct(S.cur.accountId);
   $('#list-title').innerHTML = S.searching
-    ? `<b>Search results</b> <span class="muted">${S.messages.length}</span>`
+    ? `<b>${S.searchServer ? 'Server results' : 'Search results'}</b> <span class="muted">${S.messages.length}</span>`
     : S.cur ? `<b>${esc(folderName(S.cur.accountId, S.cur.folder))}</b> <span class="muted">${esc(a?.email || '')}</span>` : '';
   ROWS = []; OFFS = [];
   let y = 0, last = null;
@@ -170,7 +171,14 @@ function renderList() {
   const footer = $('#list-footer');
   footer.innerHTML = '';
   if (!S.messages.length) {
-    $('#msg-spacer').innerHTML = `<div class="list-empty">${icon(S.searching ? 'search' : 'inbox', 40)}<p>${S.searching ? 'No matches in downloaded mail' : S.cur ? 'All clear – no messages here' : ''}</p></div>`;
+    $('#msg-spacer').innerHTML = `<div class="list-empty">${icon(S.searching ? 'search' : 'inbox', 40)}<p>${S.searching ? (S.searchServer ? 'No matches on the server' : 'No matches in downloaded mail') : S.cur ? 'All clear – no messages here' : ''}</p></div>`;
+  }
+  if (S.searching && !S.searchServer && S.cur && S.searchQuery) {
+    const b = document.createElement('button');
+    b.className = 'ghost';
+    b.textContent = `Search all of “${folderName(S.cur.accountId, S.cur.folder)}” on the server`;
+    b.onclick = () => searchOnServer();
+    footer.appendChild(b);
   } else if (!S.searching && S.cur && S.messages.length >= limit()) {
     const b = document.createElement('button');
     b.className = 'ghost';
@@ -331,13 +339,23 @@ function showReader(view) {
   renderBody();
 }
 
+/** Defence in depth on top of the sandbox + CSP: drop tags that can redirect the frame
+ *  (meta refresh), re-point links (base) or embed active content. DOMParser is inert:
+ *  nothing in the email loads or runs while it is parsed. */
+function cleanEmailHtml(html) {
+  const d = new DOMParser().parseFromString(html, 'text/html');
+  d.querySelectorAll('meta[http-equiv], base, script, object, embed, applet, iframe, frame, frameset, link[rel]:not([rel~="stylesheet"])').forEach((n) => n.remove());
+  const styles = [...d.head.querySelectorAll('style')].map((n) => n.outerHTML).join('');
+  return styles + d.body.innerHTML;
+}
+
 function renderBody() {
   const v = S.view;
   if (!v) return;
   $('#r-remote').hidden = !(v.has_remote && !S.allowRemote);
   const imgSrc = S.allowRemote ? 'data: https: http:' : 'data:';
   const darkify = S.settings.dark_emails && document.documentElement.dataset.dark === '1';
-  const body = v.html || `<pre style="white-space:pre-wrap;font-family:inherit;margin:0">${esc(v.text)}</pre>`;
+  const body = v.html ? cleanEmailHtml(v.html) : `<pre style="white-space:pre-wrap;font-family:inherit;margin:0">${esc(v.text)}</pre>`;
   const doc = `<!doctype html><html><head><meta charset="utf-8">
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${imgSrc}; style-src 'unsafe-inline'; font-src data:">
     <style>html{background:#fff}body{font-family:"Segoe UI",system-ui,sans-serif;font-size:14px;line-height:1.5;color:#1d2330;margin:0;padding:4px 2px 24px;overflow-wrap:anywhere}
@@ -525,12 +543,17 @@ $('#r-call').onclick = () => {
 // ------------------------------------------------------------------ search
 const runSearch = debounce(async (q) => {
   if (q.length < 2) {
+    S.searchQuery = '';
     if (S.searching && S.cur) selectFolder(S.cur.accountId, S.cur.folder);
     return;
   }
   try {
     S.searching = true;
-    S.messages = await invoke('search', { accountId: S.cur?.accountId ?? null, query: q });
+    S.searchServer = false;
+    S.searchQuery = q;
+    const list = await invoke('search', { accountId: S.cur?.accountId ?? null, query: q });
+    if (S.searchQuery !== q) return;   // a newer search started meanwhile
+    S.messages = list;
     S.selected.clear();
     $('#messages').scrollTop = 0;
     renderSidebar();
@@ -538,7 +561,28 @@ const runSearch = debounce(async (q) => {
   } catch (err) { toast(errText(err), 'error'); }
 }, 250);
 $('#search').addEventListener('input', (e) => runSearch(e.target.value.trim()));
-$('#btn-refresh').onclick = () => syncCurrent();
+
+/** Searches the whole current folder on the mail server, including mail never downloaded. */
+async function searchOnServer() {
+  const q = S.searchQuery, cur = S.cur;
+  if (!q || !cur) return;
+  try {
+    const list = await withBusy('Searching the server…', () => invoke('search_server', { accountId: cur.accountId, folder: cur.folder, query: q }));
+    if (S.searchQuery !== q || !S.searching) return;
+    S.searchServer = true;
+    S.messages = list;
+    S.selected.clear();
+    $('#messages').scrollTop = 0;
+    renderList();
+  } catch (err) { toast(errText(err), 'error'); }
+}
+$('#btn-refresh').onclick = () => refreshAll();
+
+/** Re-sync the open folder and re-read every account's folder list (new/renamed folders). */
+function refreshAll() {
+  syncCurrent();
+  for (const a of S.accounts) refreshAccount(a.id);
+}
 
 // ------------------------------------------------------------------ add account dialog
 let acctKind = 'm365';
@@ -579,6 +623,7 @@ $('#acct-save').onclick = async () => {
   msg.className = 'small';
   msg.textContent = acctKind === 'imap' ? 'Connecting…' : 'A browser window opened – sign in there, then come back here…';
   $('#acct-save').disabled = true;
+  $('#acct-cancel-signin').hidden = acctKind === 'imap';
   try {
     const account = await invoke('add_account', { input });
     if (acctKind === 'm365') { localStorage.setItem('lm.ms.client', input.client_id); localStorage.setItem('lm.ms.tenant', input.tenant); }
@@ -598,5 +643,7 @@ $('#acct-save').onclick = async () => {
     msg.textContent = errText(e);
   } finally {
     $('#acct-save').disabled = false;
+    $('#acct-cancel-signin').hidden = true;
   }
 };
+$('#acct-cancel-signin').onclick = () => invoke('cancel_sign_in');

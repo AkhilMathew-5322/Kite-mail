@@ -39,24 +39,29 @@ pub fn start(app: AppHandle, st: Shared) {
         let app = app.clone();
         let st = st.clone();
         std::thread::Builder::new().name("push-supervisor".into()).spawn(move || {
-            let mut running: HashMap<i64, Arc<AtomicBool>> = HashMap::new();
+            type Worker = (Arc<AtomicBool>, Option<std::thread::JoinHandle<()>>);
+            let mut running: HashMap<i64, Worker> = HashMap::new();
             loop {
                 let ids: Vec<i64> = st.db.accounts().map(|a| a.into_iter().map(|a| a.id).collect()).unwrap_or_default();
-                running.retain(|id, stop| {
-                    let keep = ids.contains(id) && !stop.load(Ordering::Relaxed);
+                running.retain(|id, (stop, handle)| {
+                    // A thread that ended on its own (e.g. a panic on a malformed server reply)
+                    // is dropped here so it gets restarted below.
+                    let alive = handle.as_ref().is_some_and(|h| !h.is_finished());
+                    let keep = ids.contains(id) && alive && !stop.load(Ordering::Relaxed);
                     if !keep {
                         stop.store(true, Ordering::Relaxed);
                     }
                     keep
                 });
                 for id in ids {
-                    if !running.contains_key(&id) {
+                    if let std::collections::hash_map::Entry::Vacant(slot) = running.entry(id) {
                         let stop = Arc::new(AtomicBool::new(false));
-                        running.insert(id, stop.clone());
-                        let (app, st) = (app.clone(), st.clone());
-                        let _ = std::thread::Builder::new()
+                        let (app, st, flag) = (app.clone(), st.clone(), stop.clone());
+                        let handle = std::thread::Builder::new()
                             .name(format!("idle-{id}"))
-                            .spawn(move || idle_loop(app, st, id, stop));
+                            .spawn(move || idle_loop(app, st, id, flag))
+                            .ok();
+                        slot.insert((stop, handle));
                     }
                 }
                 std::thread::sleep(Duration::from_secs(30));
@@ -81,7 +86,7 @@ pub fn start(app: AppHandle, st: Shared) {
                             Err(e) => { let _ = app.emit("nc-error", e); }
                         }
                     }
-                    if tick % 4 == 0 {
+                    if tick.is_multiple_of(4) {
                         for acct in st.db.accounts().unwrap_or_default() {
                             if crate::nextcloud::backup_due(&crate::nextcloud::load(&st.db), &acct.email) {
                                 match backup_to_nextcloud(&st, &acct, &|_| {}) {
@@ -143,18 +148,32 @@ fn idle_loop(app: AppHandle, st: Shared, account_id: i64, stop: Arc<AtomicBool>)
             Err(e) => {
                 let _ = app.emit("account-error", json!({ "account_id": account_id, "error": e }));
                 conn = None;
-                std::thread::sleep(Duration::from_secs(backoff));
-                backoff = (backoff * 2).min(600);
+                nap(backoff, &stop);
+                backoff = (backoff * 2).min(MAX_BACKOFF);
                 continue;
             }
         }
 
-        // Wait for the server to tell us something changed (or re-check every 20 minutes).
-        if let Err(_e) = st.idle_wait(&mut conn, &acct, &folder, Duration::from_secs(20 * 60)) {
+        // Wait for the server to tell us something changed. The 5-minute cap means a
+        // connection silently killed by sleep/Wi-Fi change is noticed within minutes.
+        if let Err(_e) = st.idle_wait(&mut conn, &acct, &folder, IDLE_WAIT) {
             // Server without IDLE support or dropped connection: fall back to periodic checks.
-            std::thread::sleep(Duration::from_secs(backoff.max(120)));
-            backoff = (backoff * 2).min(600);
+            nap(backoff.max(60), &stop);
+            backoff = (backoff * 2).min(MAX_BACKOFF);
         }
+    }
+}
+
+const IDLE_WAIT: Duration = Duration::from_secs(5 * 60);
+const MAX_BACKOFF: u64 = 120;
+
+/// Sleeps up to `secs`, waking early when the account is removed.
+fn nap(secs: u64, stop: &AtomicBool) {
+    for _ in 0..secs {
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
+        std::thread::sleep(Duration::from_secs(1));
     }
 }
 

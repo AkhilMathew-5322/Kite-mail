@@ -1,0 +1,29 @@
+# cargo-audit policy for Kite Mail.
+#
+# `cargo audit` reports 0 vulnerabilities. The advisories below are "unmaintained"/"unsound"
+# notices for crates we cannot remove ourselves; each was reviewed. Anything NOT listed
+# here still fails the audit (CI runs it on every push), so new problems are not hidden.
+# Re-check this list whenever Tauri or the imap crate is upgraded.
+
+[advisories]
+ignore = [
+    # chrono: unmaintained (no security issue). Required by the `imap` crate itself
+    # (every Rust IMAP client depends on it). We only use it to format/parse dates.
+    "RUSTSEC-2026-0543",
+
+    # glib 0.18: unsound `VariantStrIter`. Part of the GTK3 stack Tauri 2 uses on Linux
+    # (tauri -> muda/wry -> gtk 0.18). Kite Mail never iterates GVariant strings, and the
+    # fix (glib >= 0.20) needs Tauri's move to GTK4 - not something an app can override.
+    "RUSTSEC-2024-0429",
+
+    # proc-macro-error: unmaintained, compile-time only (glib-macros 0.18). Same GTK3 stack.
+    "RUSTSEC-2024-0370",
+
+    # zvariant / zvariant_derive / zbus_names: unmaintained because they were merged into
+    # zbus 6. Pulled in (Linux only) by tauri-plugin-notification and tauri-plugin-opener,
+    # which pin zbus 5. Goes away when those plugins move to zbus 6.
+    "RUSTSEC-2026-0370",
+    "RUSTSEC-2026-0371",
+    "RUSTSEC-2026-0372",
+]
+informational_warnings = ["unmaintained", "unsound", "notice", "yanked"]

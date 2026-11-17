@@ -12,6 +12,19 @@ on:
   workflow_dispatch:
 
 jobs:
+  audit:
+    # Fails the build on any known vulnerability or new unmaintained/unsound crate.
+    # Reviewed exceptions (upstream Tauri/imap dependencies) live in src-tauri/.cargo/audit.toml.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: cargo audit
+        working-directory: src-tauri
+        run: cargo audit --deny warnings
+
   desktop:
     strategy:
       fail-fast: false

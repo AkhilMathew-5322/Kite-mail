@@ -205,13 +205,24 @@ pub fn decrypt(key: &[u8], blob: &[u8]) -> Result<Vec<u8>, String> {
 // ------------------------------------------------------------------ transport
 
 /// The address other devices on this network can reach us at.
-pub fn lan_ip() -> String {
-    UdpSocket::bind("0.0.0.0:0")
-        .and_then(|s| { s.connect("10.255.255.255:9")?; s.local_addr() })
-        .map(|a| a.ip().to_string())
-        .ok()
-        .filter(|ip| ip != "0.0.0.0")
-        .unwrap_or_else(|| "127.0.0.1".into())
+/// Candidate addresses the phone may reach this computer on (Wi-Fi, Ethernet, VPN…).
+/// Asks the OS which local address it would use to reach each private range and the
+/// internet; no packets are sent. At most 4, most likely first.
+pub fn lan_ips() -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for target in ["10.255.255.255:9", "192.168.255.255:9", "172.31.255.255:9", "1.1.1.1:9"] {
+        let ip = UdpSocket::bind("0.0.0.0:0").and_then(|s| { s.connect(target)?; s.local_addr() }).map(|a| a.ip());
+        if let Ok(std::net::IpAddr::V4(v4)) = ip {
+            let txt = v4.to_string();
+            if !v4.is_unspecified() && !v4.is_loopback() && !out.contains(&txt) {
+                out.push(txt);
+            }
+        }
+    }
+    // Private (home/office LAN) addresses before anything else.
+    out.sort_by_key(|ip| !ip.parse::<std::net::Ipv4Addr>().map(|a| a.is_private()).unwrap_or(false));
+    out.truncate(4);
+    out
 }
 
 pub fn qr_svg(text: &str) -> String {
@@ -239,8 +250,15 @@ pub fn start(db: &Db, host_override: Option<String>, stop: Arc<AtomicBool>, on_e
     let listener = TcpListener::bind("0.0.0.0:0").map_err(|e| format!("Cannot open a network port: {e}"))?;
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
-    let host = host_override.unwrap_or_else(lan_ip);
-    let code = format!("kitemail://pair?h={host}:{port}&t={token}&k={}", URL_SAFE_NO_PAD.encode(key));
+    let hosts = match host_override {
+        Some(h) => vec![h],
+        None => {
+            let ips = lan_ips();
+            if ips.is_empty() { vec!["127.0.0.1".to_string()] } else { ips }
+        }
+    };
+    let h = hosts.iter().map(|ip| format!("{ip}:{port}")).collect::<Vec<_>>().join(",");
+    let code = format!("kitemail://pair?h={h}&t={token}&k={}", URL_SAFE_NO_PAD.encode(key));
 
     std::thread::Builder::new().name("pairing".into()).spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(PAIR_SECONDS);
@@ -284,11 +302,18 @@ pub fn import_from_code(db: &Db, code: &str) -> Result<ImportReport, String> {
         _ => return Err("The pairing code is incomplete".into()),
     };
     let key = URL_SAFE_NO_PAD.decode(key).map_err(|_| "The pairing code is damaged".to_string())?;
-    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(30)).build();
-    let resp = agent.get(&format!("http://{host}/pair/{token}")).call().map_err(|e| match e {
-        ureq::Error::Status(404, _) => "This pairing code is not valid any more – show a new QR code on the computer".to_string(),
-        other => format!("Can't reach the computer ({other}). Make sure both devices are on the same Wi-Fi and the QR code is still showing (codes expire after 10 minutes)."),
-    })?;
+    // The computer lists every address it might be reachable on; use the first that answers.
+    let agent = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(4)).timeout(Duration::from_secs(30)).build();
+    let mut last_err = String::new();
+    let mut resp = None;
+    for h in host.split(',').map(str::trim).filter(|h| !h.is_empty()).take(6) {
+        match agent.get(&format!("http://{h}/pair/{token}")).call() {
+            Ok(r) => { resp = Some(r); break; }
+            Err(ureq::Error::Status(404, _)) => return Err("This pairing code is not valid any more – show a new QR code on the computer".into()),
+            Err(other) => last_err = other.to_string(),
+        }
+    }
+    let resp = resp.ok_or_else(|| format!("Can't reach the computer ({last_err}). Make sure both devices are on the same Wi-Fi and the QR code is still showing (codes expire after 10 minutes)."))?;
     let mut blob = Vec::new();
     resp.into_reader().take(50 << 20).read_to_end(&mut blob).map_err(|e| e.to_string())?;
     let plain = decrypt(&key, &blob)?;
@@ -353,7 +378,9 @@ mod tests {
         let again = import_from_code(&phone, &info.code).unwrap();
         assert_eq!((again.accounts, again.skipped_accounts, again.todos), (0, 1, 0));
         let second_phone = Db::memory();
-        assert_eq!(import_from_code(&second_phone, &info.code).unwrap().accounts, 1);
+        // QR lists several addresses: an unreachable one first must not stop the import
+        let multi = info.code.replacen("h=", "h=127.0.0.1:9,", 1);
+        assert_eq!(import_from_code(&second_phone, &multi).unwrap().accounts, 1);
         assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap().count, 2);
         assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap().count, 3);
         // ---- stop: the code no longer works
