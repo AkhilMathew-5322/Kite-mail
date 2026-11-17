@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Kite Mail</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="busy"></div>
+  <div id="app" data-tab="mail">
+    <!-- Navigation rail -->
+    <nav id="rail">
+      <div class="logo" title="Kite Mail"><i data-icon="kite" data-size="22"></i></div>
+      <button class="rail-btn active" data-tab="mail" title="Mail"><i data-icon="inbox" data-size="22"></i><span>Mail</span><b class="badge" id="badge-mail"></b></button>
+      <button class="rail-btn" data-tab="contacts" title="Contacts"><i data-icon="users" data-size="22"></i><span>Contacts</span></button>
+      <button class="rail-btn" data-tab="tasks" title="Tasks"><i data-icon="tasks" data-size="22"></i><span>Tasks</span><b class="badge" id="badge-tasks"></b></button>
+      <div class="rail-spacer"></div>
+      <button class="rail-btn" id="btn-theme" title="Toggle light / dark"></button>
+      <button class="rail-btn" data-tab="settings" title="Settings"><i data-icon="settings" data-size="22"></i><span>Settings</span></button>
+    </nav>
+
+    <!-- ================= MAIL ================= -->
+    <aside id="sidebar" class="tab-mail">
+      <button id="btn-compose" class="compose-btn"><i data-icon="pen"></i> New message</button>
+      <nav id="accounts"></nav>
+      <button id="btn-add-account" class="ghost wide"><i data-icon="plus"></i> Add account</button>
+    </aside>
+
+    <section id="list-pane" class="tab-mail">
+      <div class="list-toolbar">
+        <button class="icon only-narrow" id="btn-drawer" title="Folders"><i data-icon="menu"></i></button>
+        <label class="search"><i data-icon="search" data-size="16"></i><input id="search" type="search" placeholder="Search mail" autocomplete="off" /></label>
+        <button id="btn-refresh" class="icon" title="Refresh (F5)"><i data-icon="refresh"></i></button>
+      </div>
+      <div class="list-head">
+        <div id="list-title"></div>
+        <div id="bulk" hidden>
+          <span id="bulk-count"></span>
+          <button class="icon" data-bulk="read" title="Mark read"><i data-icon="mail" data-size="16"></i></button>
+          <button class="icon" data-bulk="archive" title="Archive"><i data-icon="archive" data-size="16"></i></button>
+          <button class="icon" data-bulk="delete" title="Delete"><i data-icon="trash" data-size="16"></i></button>
+        </div>
+      </div>
+      <div id="messages" tabindex="0"><div id="msg-spacer"></div></div>
+      <div id="list-footer"></div>
+    </section>
+
+    <main id="reader" class="tab-mail">
+      <div id="reader-empty" class="empty">
+        <div class="empty-art"><i data-icon="inbox" data-size="56"></i></div>
+        <h3>Nothing selected</h3>
+        <p>Pick a message to read it here.</p>
+      </div>
+      <article id="reader-content" hidden>
+        <div class="reader-bar">
+          <button class="icon only-narrow" id="btn-back" title="Back"><i data-icon="back"></i></button>
+          <div class="btn-group">
+            <button class="tb" data-act="reply" title="Reply (R)"><i data-icon="reply"></i><span>Reply</span></button>
+            <button class="tb" data-act="replyall" title="Reply all (A)"><i data-icon="reply_all"></i><span>All</span></button>
+            <button class="tb" data-act="forward" title="Forward (F)"><i data-icon="forward"></i><span>Forward</span></button>
+          </div>
+          <span class="grow"></span>
+          <button class="icon" data-act="archive" title="Archive (E)"><i data-icon="archive"></i></button>
+          <button class="icon" data-act="delete" title="Delete (Del)"><i data-icon="trash"></i></button>
+          <button class="icon" data-act="move" title="Move to folder"><i data-icon="move"></i></button>
+          <button class="icon" data-act="unread" title="Mark unread (U)"><i data-icon="unread"></i></button>
+          <button class="icon" data-act="star" title="Star (S)"><i data-icon="star"></i></button>
+          <button class="icon" data-act="task" title="Add to tasks (T)"><i data-icon="clock"></i></button>
+        </div>
+        <div class="reader-scroll">
+          <h1 id="r-subject"></h1>
+          <div class="r-meta">
+            <span id="r-avatar"></span>
+            <div class="r-people">
+              <div class="r-from"><strong id="r-from"></strong><span class="muted" id="r-from-addr"></span>
+                <button class="chip-btn" id="r-add-contact" title="Add to contacts"><i data-icon="user_plus" data-size="14"></i></button>
+                <button class="chip-btn" id="r-call" title="Call" hidden><i data-icon="phone" data-size="14"></i></button>
+              </div>
+              <div class="muted small" id="r-to"></div>
+              <div class="muted small" id="r-cc"></div>
+            </div>
+            <div class="muted small r-date" id="r-date"></div>
+          </div>
+          <div id="r-remote" class="notice" hidden>
+            <i data-icon="eye_off" data-size="16"></i> Remote images blocked to protect your privacy.
+            <button id="btn-load-images" class="link">Load images</button>
+          </div>
+          <div id="r-attachments"></div>
+          <div class="frame-wrap"><iframe id="r-body" sandbox="allow-same-origin" title="Message body"></iframe></div>
+        </div>
+      </article>
+    </main>
+
+    <!-- ================= CONTACTS ================= -->
+    <section id="view-contacts" class="tab-view">
+      <div class="cv-list">
+        <div class="list-toolbar">
+          <label class="search"><i data-icon="search" data-size="16"></i><input id="contact-search" type="search" placeholder="Search contacts" /></label>
+          <button class="icon accent" id="btn-new-contact" title="New contact"><i data-icon="plus"></i></button>
+        </div>
+        <div id="contact-list"></div>
+      </div>
+      <div class="cv-detail" id="contact-detail"></div>
+    </section>
+
+    <!-- ================= TASKS ================= -->
+    <section id="view-tasks" class="tab-view">
+      <div class="page">
+        <header class="page-head">
+          <div><h2>Tasks</h2><p class="muted" id="task-summary"></p></div>
+          <div class="seg" id="task-filter">
+            <button data-f="open" class="active">Open</button><button data-f="today">Today</button>
+            <button data-f="overdue">Overdue</button><button data-f="done">Done</button>
+          </div>
+        </header>
+        <form id="task-add" class="task-add" autocomplete="off">
+          <i data-icon="plus"></i>
+          <input id="task-title" placeholder="Add a task…  (Enter to save)" />
+          <input id="task-due" type="datetime-local" title="Due date & reminder" />
+          <button type="button" class="chip" data-quick="1h">+1h</button>
+          <button type="button" class="chip" data-quick="tonight">6 pm</button>
+          <button type="button" class="chip" data-quick="tomorrow">Tomorrow 9</button>
+        </form>
+        <div id="task-list"></div>
+      </div>
+    </section>
+
+    <!-- ================= SETTINGS ================= -->
+    <section id="view-settings" class="tab-view">
+      <div class="page settings" id="settings-page"></div>
+    </section>
+  </div>
+
+  <div id="toasts"></div>
+
+  <!-- Compose -->
+  <dialog id="compose" class="sheet">
+    <form method="dialog" id="compose-form" autocomplete="off">
+      <header>
+        <strong id="compose-title">New message</strong>
+        <span class="muted small" id="c-status"></span>
+        <span class="grow"></span>
+        <button type="button" class="icon" id="compose-close" title="Close"><i data-icon="x"></i></button>
+      </header>
+      <div class="field"><label>From</label><select id="c-from"></select></div>
+      <div class="field ac"><label>To</label><input id="c-to" placeholder="Type a name or email…" />
+        <button type="button" class="link small" id="c-show-cc" tabindex="-1">Cc / Bcc</button></div>
+      <div class="field cc ac" hidden><label>Cc</label><input id="c-cc" /></div>
+      <div class="field cc ac" hidden><label>Bcc</label><input id="c-bcc" /></div>
+      <div class="field"><label>Subject</label><input id="c-subject" /></div>
+      <div id="ac-menu" hidden></div>
+      <textarea id="c-body" spellcheck="true" placeholder="Write your message…"></textarea>
+      <div id="c-grammar" hidden></div>
+      <div id="c-attachments"></div>
+      <footer>
+        <button type="button" class="primary send-btn" id="c-send"><i data-icon="send" data-size="16"></i> Send</button>
+        <button type="button" class="ghost" id="c-attach" title="Attach files"><i data-icon="clip"></i></button>
+        <button type="button" class="ghost" id="c-check" title="Check grammar & spelling (LanguageTool)"><i data-icon="type"></i> Check</button>
+        <span class="grow"></span>
+        <span class="muted small">Ctrl+Enter to send</span>
+        <button type="button" class="ghost" id="c-discard" title="Discard draft"><i data-icon="trash"></i></button>
+      </footer>
+    </form>
+  </dialog>
+
+  <!-- Add account -->
+  <dialog id="account-dlg" class="sheet narrow">
+    <form method="dialog" id="account-form">
+      <header><strong>Add account</strong><span class="grow"></span><button type="button" class="icon" id="acct-close"><i data-icon="x"></i></button></header>
+      <div class="seg wide" id="acct-tabs">
+        <button type="button" data-kind="m365" class="active">Microsoft 365</button>
+        <button type="button" data-kind="gmail">Gmail</button>
+        <button type="button" data-kind="imap">Other (IMAP)</button>
+      </div>
+      <div class="field"><label>Your name</label><input id="a-name" placeholder="Shown to recipients" /></div>
+      <div class="field"><label>Email</label><input id="a-email" type="email" placeholder="you@company.com" /></div>
+      <div class="kind kind-m365">
+        <div class="field"><label>Client ID</label><input id="a-ms-client" placeholder="Application (client) ID from Entra ID" /></div>
+        <div class="field"><label>Tenant</label><input id="a-ms-tenant" placeholder="Optional – defaults to your email domain" /></div>
+        <p class="hint">Opens Microsoft sign-in in your browser. Needs an Entra ID app registration (see README).</p>
+      </div>
+      <div class="kind kind-gmail" hidden>
+        <div class="field"><label>Client ID</label><input id="a-g-client" placeholder="xxxx.apps.googleusercontent.com" /></div>
+        <div class="field"><label>Client secret</label><input id="a-g-secret" type="password" /></div>
+        <p class="hint">Opens Google sign-in in your browser. Needs a Google Cloud "Desktop app" OAuth client (see README).</p>
+      </div>
+      <div class="kind kind-imap" hidden>
+        <div class="field two"><label>IMAP server</label><input id="a-imap-host" placeholder="imap.example.com" /><input id="a-imap-port" type="number" value="993" title="Port (SSL/TLS)" /></div>
+        <div class="field two"><label>SMTP server</label><input id="a-smtp-host" placeholder="smtp.example.com" /><input id="a-smtp-port" type="number" value="465" title="Port" /></div>
+        <div class="field"><label>SMTP security</label>
+          <select id="a-smtp-sec"><option value="ssl">SSL/TLS (465)</option><option value="starttls">STARTTLS (587)</option><option value="none">None (not recommended)</option></select></div>
+        <div class="field"><label>Username</label><input id="a-user" placeholder="Defaults to your email" /></div>
+        <div class="field"><label>Password</label><input id="a-pass" type="password" placeholder="Password or app password" /></div>
+      </div>
+      <p id="acct-msg" class="small"></p>
+      <footer><span class="grow"></span><button type="button" class="primary" id="acct-save">Add account</button></footer>
+    </form>
+  </dialog>
+
+  <script src="js/icons.js"></script>
+  <script src="js/themes.js"></script>
+  <script src="js/core.js"></script>
+  <script src="js/mail.js"></script>
+  <script src="js/compose.js"></script>
+  <script src="js/contacts.js"></script>
+  <script src="js/tasks.js"></script>
+  <script src="js/settings.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
