@@ -6,6 +6,7 @@ Kite Mail is a lightweight email client for **Windows, Linux and Android**. It's
 
 ## What's new in 0.3.1 (QA + security release)
 - **Security:** `cargo audit` reports **0 vulnerabilities**. SQLite, zip and the IMAP library were upgraded (the old IMAP parser used an unsound number-parsing crate). The few remaining "unmaintained" notices come from Tauri's own Linux stack (GTK3/D-Bus) and are listed with reasons in `src-tauri/.cargo/audit.toml`. CI now fails on any new advisory.
+- **Account switcher on Android:** tap your avatar (top right) for a bottom sheet with every account, its unread count and colour. **Swipe the avatar** up/down or left/right to flip straight to the next account. A red dot means new mail in another account, each account reopens at the folder you last used, and the drawer shows only the current account's folders.
 - **Search on the server:** after a local search, click *Search all of "Folder" on the server* to find mail that was never downloaded.
 - **More reliable push:** a dead connection is noticed within 5 minutes (for example after sleep or a Wi-Fi change), retries are capped at 2 minutes, and a crashed push thread restarts by itself.
 - **Safer deleting:** permanently deleting a message never removes other messages that another mail app has marked for deletion.

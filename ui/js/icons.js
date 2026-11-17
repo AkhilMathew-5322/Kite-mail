@@ -19,6 +19,7 @@ const ICON_PATHS = {
   refresh: '<path d="M21 12a9 9 0 1 1-2.6-6.4L21 8"/><path d="M21 3v5h-5"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
+  chevrons: '<path d="m7 15 5 5 5-5M7 9l5-5 5 5"/>',
   pen: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
   reply: '<path d="M9 17 4 12l5-5"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/>',
   reply_all: '<path d="M7 17l-5-5 5-5"/><path d="M12 17l-5-5 5-5"/><path d="M22 18v-2a4 4 0 0 0-4-4H7"/>',

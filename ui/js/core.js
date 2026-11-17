@@ -26,6 +26,7 @@ const S = {
   folders: {},
   errors: {},
   collapsed: {},
+  lastFolder: {},      // accountId -> folder last opened (account switcher)
   cur: null,           // { accountId, folder }
   messages: [],
   selected: new Set(),
@@ -148,13 +149,18 @@ const bareAddr = (s) => ((s.match(/<([^>]+)>/) || [, s])[1]).trim().toLowerCase(
 const fmtAddr = (name, addr) => (name ? `${/[,;"]/.test(name) ? `"${name.replace(/"/g, '')}"` : name} <${addr}>` : addr);
 
 /** Deterministic avatar: initials on a colour derived from the name. */
+/** Stable colour (hue 0-359) for an address – used for avatars and each account's accent. */
+function hueOf(text) {
+  let h = 0;
+  for (const ch of String(text || '').toLowerCase()) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return h % 360;
+}
+
 function avatar(name, email, size = 36) {
   const label = (name || email || '?').trim();
   const words = label.replace(/[^\p{L}\p{N} ]/gu, ' ').split(/\s+/).filter(Boolean);
   const initials = ((words[0]?.[0] || '?') + (words.length > 1 ? words[words.length - 1][0] : '')).toUpperCase();
-  let h = 0;
-  for (const ch of (email || label).toLowerCase()) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  const hue = h % 360;
+  const hue = hueOf(email || label);
   return `<span class="avatar" style="width:${size}px;height:${size}px;font-size:${Math.round(size * 0.38)}px;background:linear-gradient(135deg,hsl(${hue} 70% 58%),hsl(${(hue + 40) % 360} 70% 48%))">${esc(initials)}</span>`;
 }
 

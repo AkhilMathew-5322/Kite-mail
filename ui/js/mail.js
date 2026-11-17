@@ -14,19 +14,21 @@ const folderName = (accountId, name) => folderOf(accountId, name)?.display || na
 function renderSidebar() {
   const nav = $('#accounts');
   nav.innerHTML = '';
-  for (const a of S.accounts) {
+  // On phones the drawer shows only the current account; the avatar switcher changes account.
+  const phone = $('#app').classList.contains('narrow') && S.cur && S.accounts.length > 1;
+  for (const a of phone ? S.accounts.filter((x) => x.id === S.cur.accountId) : S.accounts) {
     const box = document.createElement('div');
     box.className = 'account';
     const err = S.errors[a.id];
-    const collapsed = S.collapsed[a.id];
+    const collapsed = !phone && S.collapsed[a.id];
     box.innerHTML = `<div class="acct-head" title="${esc(err || a.email)}">
         ${avatar(a.name, a.email, 26)}
         <div class="acct-names"><b>${esc(a.name || a.email)}</b><small>${esc(a.email)}</small></div>
         ${err ? `<span class="warn" title="${esc(err)}">${icon('junk', 16)}</span>` : ''}
-        <span class="chev ${collapsed ? '' : 'open'}">${icon('back', 14)}</span>
+        ${phone ? `<span class="switch-hint">${icon('chevrons', 16)}</span>` : `<span class="chev ${collapsed ? '' : 'open'}">${icon('back', 14)}</span>`}
       </div>
       ${err && a.kind !== 'imap' ? `<button class="reconnect" data-id="${a.id}">${icon('refresh', 14)} Reconnect account</button>` : ''}`;
-    $('.acct-head', box).onclick = () => { S.collapsed[a.id] = !collapsed; renderSidebar(); };
+    $('.acct-head', box).onclick = phone ? () => openAccountSheet() : () => { S.collapsed[a.id] = !collapsed; renderSidebar(); };
     const rc = $('.reconnect', box);
     if (rc) rc.onclick = () => reconnect(a.id);
     if (!collapsed) {
@@ -52,6 +54,117 @@ function renderSidebar() {
   const b = $('#badge-mail');
   b.textContent = unread > 99 ? '99+' : unread || '';
   b.hidden = !unread;
+  renderAccountChip();
+}
+
+// ------------------------------------------------------------------ account switcher (phones)
+const inboxUnread = (id) => (S.folders[id] || []).find((f) => f.special === 'inbox')?.unread || 0;
+
+function renderAccountChip() {
+  const chip = $('#btn-acct');
+  const a = S.cur && acct(S.cur.accountId);
+  chip.hidden = !a;
+  if (!a) return;
+  document.documentElement.style.setProperty('--acct-hue', hueOf(a.email));
+  const others = S.accounts.some((x) => x.id !== a.id && inboxUnread(x.id) > 0);
+  const html = `${avatar(a.name, a.email, 32)}${others ? '<span class="dot" title="New mail in another account"></span>' : ''}`;
+  if (chip.innerHTML !== html) chip.innerHTML = html;
+  chip.title = S.accounts.length > 1 ? `${a.email} – tap to switch, swipe to flip accounts` : a.email;
+}
+
+function openAccountSheet() {
+  const d = $('#acct-sheet');
+  if (d.open) return;
+  const items = S.accounts.map((a) => {
+    const n = inboxUnread(a.id), cur = S.cur?.accountId === a.id, err = S.errors[a.id];
+    return `<button class="acct-item${cur ? ' current' : ''}" data-id="${a.id}" style="--h:${hueOf(a.email)}">
+      ${avatar(a.name, a.email, 42)}
+      <span class="acct-names"><b>${esc(a.name || a.email)}</b><small>${esc(err ? 'Needs attention – ' + err : a.email)}</small></span>
+      ${n ? `<span class="count">${n > 99 ? '99+' : n}</span>` : ''}
+      ${cur ? `<span class="tick">${icon('check', 18)}</span>` : ''}
+    </button>`;
+  }).join('');
+  const total = S.accounts.reduce((n, a) => n + inboxUnread(a.id), 0);
+  d.innerHTML = `<div class="sheet-handle"></div>
+    <header><strong>Accounts</strong><span class="muted small">${total ? `${total} unread` : 'All caught up'}</span></header>
+    <div class="acct-list">${items}</div>
+    <footer>
+      <button class="ghost" data-act="add">${icon('plus', 16)} Add account</button>
+      <button class="ghost" data-act="manage">${icon('settings', 16)} Manage</button>
+    </footer>`;
+  d.onclick = (e) => {
+    if (e.target === d) return closeAccountSheet();
+    const it = e.target.closest('.acct-item');
+    if (it) {
+      closeAccountSheet();
+      switchAccount(Number(it.dataset.id));
+      // opened from the drawer: close that too once the sheet's Back entry is gone
+      if ($('#app').classList.contains('drawer')) setTimeout(() => { if (!dropLayer('drawer')) $('#app').classList.remove('drawer'); }, 150);
+      return;
+    }
+    const act = e.target.closest('[data-act]')?.dataset.act;
+    if (act === 'add') { closeAccountSheet(); openAccountDialog(); }
+    if (act === 'manage') { closeAccountSheet(); switchTab('settings'); }
+  };
+  // drag the sheet down to dismiss
+  let y0 = null, dy = 0;
+  d.ontouchstart = (e) => { if ($('.acct-list', d).scrollTop <= 0) { y0 = e.touches[0].clientY; dy = 0; d.style.transition = 'none'; } };
+  d.ontouchmove = (e) => { if (y0 === null) return; dy = Math.max(0, e.touches[0].clientY - y0); d.style.transform = `translateY(${dy}px)`; };
+  d.ontouchend = () => {
+    if (y0 === null) return;
+    y0 = null;
+    d.style.transition = '';
+    if (dy > 90) closeAccountSheet(); else d.style.transform = '';
+  };
+  d.style.transform = '';
+  d.showModal();
+  pushLayer('accounts', () => { if (d.open) d.close(); });
+}
+
+function closeAccountSheet() {
+  const d = $('#acct-sheet');
+  if (!d.open) return;
+  if (!dropLayer('accounts')) d.close();
+}
+
+/** Opens an account at the folder last used there (else its inbox), with a slide in the swipe direction. */
+function switchAccount(id, dir = 0) {
+  if (!S.accounts.length || S.cur?.accountId === id) return;
+  const folders = S.folders[id] || [];
+  const last = S.lastFolder[id];
+  const target = (last && folders.some((f) => f.name === last)) ? last : folders.find((f) => f.special === 'inbox')?.name;
+  if (!target) { refreshAccount(id, true); return; }
+  const pane = $('#list-pane');
+  pane.style.setProperty('--dx', `${dir >= 0 ? 36 : -36}px`);
+  pane.classList.remove('acct-in');
+  void pane.offsetWidth;            // restart the animation
+  pane.classList.add('acct-in');
+  selectFolder(id, target);
+  if (navigator.vibrate) try { navigator.vibrate(8); } catch (_) { /* no haptics */ }
+}
+
+/** Next/previous account in order (wraps around). */
+function cycleAccount(step) {
+  if (S.accounts.length < 2 || !S.cur) return;
+  const i = S.accounts.findIndex((a) => a.id === S.cur.accountId);
+  const next = S.accounts[(i + step + S.accounts.length) % S.accounts.length];
+  switchAccount(next.id, step);
+  toast(`${next.name || next.email}`, 'info');
+}
+
+{
+  const chip = $('#btn-acct');
+  let sx = 0, sy = 0, swiped = false;
+  chip.addEventListener('touchstart', (e) => { sx = e.touches[0].clientX; sy = e.touches[0].clientY; swiped = false; }, { passive: true });
+  chip.addEventListener('touchend', (e) => {
+    const dx = e.changedTouches[0].clientX - sx, dy = e.changedTouches[0].clientY - sy;
+    if (Math.max(Math.abs(dx), Math.abs(dy)) < 24) return;
+    swiped = true;
+    // swipe down / left = next account, up / right = previous
+    cycleAccount((Math.abs(dy) > Math.abs(dx) ? dy > 0 : dx < 0) ? 1 : -1);
+  });
+  chip.onclick = () => { if (swiped) { swiped = false; return; } openAccountSheet(); };
+  $('#list-pane').addEventListener('animationend', () => $('#list-pane').classList.remove('acct-in'));
 }
 
 async function reloadFolders(accountId) {
@@ -108,6 +221,7 @@ function openFirstInbox() {
 // ------------------------------------------------------------------ list
 async function selectFolder(accountId, folder) {
   S.cur = { accountId, folder };
+  S.lastFolder[accountId] = folder;
   S.searching = false; S.searchServer = false; S.searchQuery = '';
   $('#search').value = '';
   S.selected.clear();

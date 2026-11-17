@@ -87,7 +87,11 @@ listen('pair-event', ({ payload }) => onPairEvent(payload));
 
 // ------------------------------------------------------------------ responsive layout
 const narrowQuery = window.matchMedia('(max-width: 760px)');
-const applyNarrow = () => { $('#app').classList.toggle('narrow', narrowQuery.matches); document.body.classList.toggle('narrow', narrowQuery.matches); };
+const applyNarrow = () => {
+  $('#app').classList.toggle('narrow', narrowQuery.matches);
+  document.body.classList.toggle('narrow', narrowQuery.matches);
+  if (S.accounts.length) renderSidebar();
+};
 narrowQuery.addEventListener('change', applyNarrow);
 applyNarrow();
 

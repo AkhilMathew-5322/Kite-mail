@@ -32,6 +32,7 @@
         <button class="icon only-narrow" id="btn-drawer" title="Folders"><i data-icon="menu"></i></button>
         <label class="search"><i data-icon="search" data-size="16"></i><input id="search" type="search" placeholder="Search mail" autocomplete="off" /></label>
         <button id="btn-refresh" class="icon" title="Refresh (F5)"><i data-icon="refresh"></i></button>
+        <button id="btn-acct" class="acct-chip only-narrow" title="Switch account (swipe to flip)" hidden></button>
       </div>
       <div class="list-head">
         <div id="list-title"></div>
@@ -134,6 +135,7 @@
   </div>
 
   <div id="toasts"></div>
+  <dialog id="acct-sheet" class="acct-sheet"></dialog>
 
   <!-- Compose -->
   <dialog id="compose" class="sheet">
