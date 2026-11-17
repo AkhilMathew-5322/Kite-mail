@@ -162,6 +162,18 @@ impl AppState {
             let mut sorted: Vec<u32> = all.iter().copied().collect();
             sorted.sort_unstable_by(|a, b| b.cmp(a));
             sorted.truncate(limit as usize);
+            // UIDs follow arrival order, not message date: imported/restored mail (PST imports,
+            // migrations) can push recent messages outside the newest-UID window. Always include
+            // everything dated in the last 14 days as well.
+            if mb.exists > 0 {
+                let since = (chrono::Utc::now() - chrono::Duration::days(14)).format("%d-%b-%Y").to_string();
+                if let Ok(recent) = c.sess.uid_search(format!("SINCE {since}")) {
+                    let mut recent: Vec<u32> = recent.into_iter().collect();
+                    recent.sort_unstable_by(|a, b| b.cmp(a));
+                    let have: HashSet<u32> = sorted.iter().copied().collect();
+                    sorted.extend(recent.into_iter().take(500).filter(|u| !have.contains(u)));
+                }
+            }
 
             let new: Vec<u32> = sorted.iter().copied().filter(|u| !cached_now.contains(u)).collect();
             let existing: Vec<u32> = sorted.iter().copied().filter(|u| cached_now.contains(u)).collect();

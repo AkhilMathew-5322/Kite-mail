@@ -77,7 +77,9 @@ input[type=color]::-webkit-color-swatch { border: none; border-radius: 50%; }
 @keyframes busy { from { transform: translateX(-100%); } to { transform: translateX(260%); } }
 
 /* ---------- layout ---------- */
-#app { display: grid; grid-template-columns: 72px 248px minmax(300px, 380px) 1fr; height: 100vh; }
+#app { display: grid; grid-template-columns: 72px 248px minmax(300px, 380px) 1fr; grid-template-rows: minmax(0, 1fr); height: 100vh; height: 100dvh; overflow: hidden; }
+/* every pane is exactly one window tall and scrolls inside itself */
+#rail, #sidebar, #list-pane, #reader, .tab-view { min-height: 0; overflow: hidden; }
 #app:not([data-tab="mail"]) .tab-mail { display: none; }
 .tab-view { display: none; grid-column: 2 / -1; min-width: 0; overflow: hidden; }
 #app[data-tab="contacts"] #view-contacts, #app[data-tab="tasks"] #view-tasks, #app[data-tab="settings"] #view-settings { display: block; }
@@ -100,7 +102,7 @@ input[type=color]::-webkit-color-swatch { border: none; border-radius: 50%; }
 #sidebar { background: var(--side); display: flex; flex-direction: column; min-width: 0; padding: 14px 10px 10px; gap: 10px; border-right: 1px solid var(--line); }
 .compose-btn { background: var(--grad); color: var(--accent-fg); border: none; padding: 11px; border-radius: 14px; font-weight: 600; font-size: 1em; box-shadow: 0 8px 20px color-mix(in srgb, var(--accent) 35%, transparent); }
 .compose-btn:hover { filter: brightness(1.06); background: var(--grad); transform: translateY(-1px); }
-#accounts { flex: 1; overflow-y: auto; margin: 0 -4px; padding: 0 4px; }
+#accounts { flex: 1 1 0; min-height: 0; overflow-y: auto; margin: 0 -4px; padding: 0 4px; }
 .account { margin-bottom: 12px; }
 .acct-head { display: flex; align-items: center; gap: 8px; padding: 6px; border-radius: 10px; cursor: pointer; user-select: none; }
 .acct-head:hover { background: var(--hover); }
@@ -132,7 +134,7 @@ input[type=color]::-webkit-color-swatch { border: none; border-radius: 50%; }
 #list-title b { font-size: 1.15em; }
 #list-title .muted { font-size: .8em; margin-left: 6px; }
 #bulk { display: flex; align-items: center; gap: 2px; font-size: .85em; color: var(--muted); }
-#messages { flex: 1; overflow-y: auto; outline: none; position: relative; }
+#messages { flex: 1 1 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; outline: none; position: relative; }
 #msg-spacer { position: relative; }
 .day-head { position: absolute; left: 0; right: 0; height: 30px; padding: 8px 16px 0; font-size: .72em; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 .msg { position: absolute; left: 6px; right: 6px; display: flex; gap: 10px; align-items: center; padding: 0 10px; border-radius: 12px; cursor: pointer; user-select: none; transition: background .12s; }
@@ -176,7 +178,7 @@ input[type=color]::-webkit-color-swatch { border: none; border-radius: 50%; }
 .tb:hover { background: var(--sel); }
 .tb.on { color: var(--warn); }
 .reader-bar button.icon.on svg, button.icon.on svg { fill: currentColor; }
-.reader-scroll { flex: 1; overflow-y: auto; padding: 22px 26px 30px; }
+.reader-scroll { flex: 1 1 0; min-height: 0; overflow-y: auto; padding: 22px 26px 30px; }
 #r-subject { font-size: 1.55em; line-height: 1.25; margin: 0 0 16px; font-weight: 700; word-break: break-word; letter-spacing: -.01em; }
 .r-meta { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 14px; }
 .r-people { flex: 1; min-width: 0; }
@@ -376,7 +378,7 @@ dialog footer { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
 .only-narrow { display: none !important; }
 
 /* ---------- narrow / mobile layout ---------- */
-#app.narrow { grid-template-columns: 1fr; grid-template-rows: 1fr 62px; }
+#app.narrow { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) 62px; }
 #app.narrow #rail { grid-row: 2; flex-direction: row; justify-content: space-around; padding: 4px 6px env(safe-area-inset-bottom); border-right: none; border-top: 1px solid var(--line); }
 #app.narrow .logo, #app.narrow .rail-spacer { display: none; }
 #app.narrow .rail-btn.active::before { display: none; }
