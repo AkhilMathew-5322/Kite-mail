@@ -1,6 +1,18 @@
 'use strict';
 /* Shared state, helpers, toasts and dialogs. */
 
+// Android (edge-to-edge): MainActivity.kt reports status bar / navigation bar / keyboard sizes.
+window.__kiteInsets = (i) => {
+  const r = document.documentElement.style;
+  r.setProperty('--sat', (i.top || 0) + 'px');
+  r.setProperty('--sab', (i.bottom || 0) + 'px');
+  r.setProperty('--sal', (i.left || 0) + 'px');
+  r.setProperty('--sar', (i.right || 0) + 'px');
+  r.setProperty('--kb', (i.ime || 0) + 'px');
+  document.body?.classList.toggle('kb-open', (i.ime || 0) > 0);
+};
+try { if (window.KiteInsets) window.__kiteInsets(JSON.parse(window.KiteInsets.get())); } catch (_) { /* not Android */ }
+
 const { invoke } = window.__TAURI__.core;
 const listen = window.__TAURI__.event?.listen || (async () => () => {});
 const $ = (sel, root = document) => root.querySelector(sel);

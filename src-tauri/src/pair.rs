@@ -1,7 +1,7 @@
 //! Phone pairing: the desktop packs accounts (with their passwords / sign-in tokens), contacts,
 //! tasks, settings and the Nextcloud connection into one AES-256-GCM encrypted blob, serves it
-//! ONCE over the local network for 10 minutes, and shows a QR code containing the address and
-//! the one-time key. The phone scans, downloads, decrypts and imports. Mail then syncs from the
+//! over the local network for 10 minutes (any number of phones, until stopped), and shows a QR
+//! code containing the address and the key. Only devices that can see the QR code can decrypt. The phone scans, downloads, decrypts and imports. Mail then syncs from the
 //! mail servers – it is never copied.
 
 use crate::db::Db;
@@ -15,6 +15,8 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::net::{TcpListener, UdpSocket};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub const PAIR_SECONDS: u64 = 600;
@@ -57,6 +59,14 @@ pub struct ImportReport {
     pub contacts: u32,
     pub todos: u32,
     pub nextcloud: bool,
+}
+
+/// Progress of an active pairing code, sent to the UI.
+#[derive(Serialize, Debug, Clone)]
+pub struct PairEvent {
+    /// "paired" (a device downloaded the setup) | "ended" (expired or stopped)
+    pub kind: String,
+    pub count: u32,
 }
 
 #[derive(Serialize, Debug)]
@@ -213,8 +223,9 @@ pub fn qr_svg(text: &str) -> String {
     }
 }
 
-/// Starts the one-shot pairing server. `on_done` is called once the phone has downloaded the data.
-pub fn start(db: &Db, host_override: Option<String>, on_done: impl FnOnce(bool) + Send + 'static) -> Result<PairInfo, String> {
+/// Starts the pairing server. The code stays valid for PAIR_SECONDS and can be used by several
+/// phones (or to re-pair the same phone) until it expires or `stop` is set.
+pub fn start(db: &Db, host_override: Option<String>, stop: Arc<AtomicBool>, on_event: impl Fn(PairEvent) + Send + 'static) -> Result<PairInfo, String> {
     let payload = build_payload(db)?;
     let accounts = payload.accounts.len();
     let json = serde_json::to_vec(&payload).map_err(|e| e.to_string())?;
@@ -234,8 +245,8 @@ pub fn start(db: &Db, host_override: Option<String>, on_done: impl FnOnce(bool) 
     std::thread::Builder::new().name("pairing".into()).spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(PAIR_SECONDS);
         let path = format!("/pair/{token}");
-        let mut on_done = Some(on_done);
-        while Instant::now() < deadline {
+        let mut count = 0u32;
+        while Instant::now() < deadline && !stop.load(Ordering::Relaxed) {
             let Ok((mut s, _)) = listener.accept() else {
                 std::thread::sleep(Duration::from_millis(200));
                 continue;
@@ -245,17 +256,17 @@ pub fn start(db: &Db, host_override: Option<String>, on_done: impl FnOnce(bool) 
             let mut buf = [0u8; 2048];
             let n = s.read(&mut buf).unwrap_or(0);
             let req = String::from_utf8_lossy(&buf[..n]);
-            let ok = req.split_whitespace().nth(1) == Some(path.as_str());
-            if ok {
+            if req.split_whitespace().nth(1) == Some(path.as_str()) {
                 let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", blob.len());
                 let _ = s.write_all(&blob);
                 let _ = s.flush();
-                if let Some(f) = on_done.take() { f(true); }
-                return; // single use
+                count += 1;
+                on_event(PairEvent { kind: "paired".into(), count });
+            } else {
+                let _ = s.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
             }
-            let _ = s.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         }
-        if let Some(f) = on_done.take() { f(false); }
+        on_event(PairEvent { kind: "ended".into(), count });
     }).map_err(|e| e.to_string())?;
 
     Ok(PairInfo { qr_svg: qr_svg(&code), code, expires_in: PAIR_SECONDS, accounts })
@@ -275,8 +286,8 @@ pub fn import_from_code(db: &Db, code: &str) -> Result<ImportReport, String> {
     let key = URL_SAFE_NO_PAD.decode(key).map_err(|_| "The pairing code is damaged".to_string())?;
     let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(30)).build();
     let resp = agent.get(&format!("http://{host}/pair/{token}")).call().map_err(|e| match e {
-        ureq::Error::Status(404, _) => "This pairing code was already used or has expired – show a new QR code on the computer".to_string(),
-        other => format!("Can't reach the computer ({other}). Make sure both devices are on the same Wi-Fi."),
+        ureq::Error::Status(404, _) => "This pairing code is not valid any more – show a new QR code on the computer".to_string(),
+        other => format!("Can't reach the computer ({other}). Make sure both devices are on the same Wi-Fi and the QR code is still showing (codes expire after 10 minutes)."),
     })?;
     let mut blob = Vec::new();
     resp.into_reader().take(50 << 20).read_to_end(&mut blob).map_err(|e| e.to_string())?;
@@ -318,7 +329,8 @@ mod tests {
         desk.save_todo(&Todo { title: "Old done".into(), done: true, ..Default::default() }).unwrap();
 
         let (tx, rx) = std::sync::mpsc::channel();
-        let info = start(&desk, Some("127.0.0.1".into()), move |ok| { tx.send(ok).unwrap(); }).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let info = start(&desk, Some("127.0.0.1".into()), stop.clone(), move |e| { tx.send(e).unwrap(); }).unwrap();
         assert!(info.qr_svg.starts_with("<?xml") || info.qr_svg.contains("<svg"));
         assert!(info.code.starts_with("kitemail://pair?h=127.0.0.1:"));
 
@@ -326,7 +338,8 @@ mod tests {
         let phone = Db::memory();
         phone.save_contact(&Contact { name: "Sara".into(), email: "SARA@kb.com".into(), ..Default::default() }).unwrap();
         let rep = import_from_code(&phone, &info.code).unwrap();
-        assert!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "desktop notified");
+        let ev = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!((ev.kind.as_str(), ev.count), ("paired", 1), "desktop notified");
         assert_eq!((rep.accounts, rep.contacts, rep.todos), (1, 0, 1));
         let a = &phone.accounts().unwrap()[0];
         assert_eq!((a.email.as_str(), a.tenant.as_str()), ("akhil@kb.com", "kb.com"));
@@ -336,11 +349,23 @@ mod tests {
         assert_eq!(app["signatures"][a.id.to_string()], "Akhil · TLR");
         assert_eq!(phone.todos().unwrap().len(), 1, "completed tasks are not copied");
 
-        // ---- single use
-        let again = import_from_code(&phone, &info.code).unwrap_err();
-        assert!(again.contains("Can't reach") || again.contains("already used"), "{again}");
-        // ---- importing twice never duplicates accounts
-        let p2 = build_payload(&desk).unwrap();
-        assert_eq!(import_payload(&phone, p2).unwrap().skipped_accounts, 1);
+        // ---- the same code works again (re-pair / second phone) and never duplicates
+        let again = import_from_code(&phone, &info.code).unwrap();
+        assert_eq!((again.accounts, again.skipped_accounts, again.todos), (0, 1, 0));
+        let second_phone = Db::memory();
+        assert_eq!(import_from_code(&second_phone, &info.code).unwrap().accounts, 1);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap().count, 2);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap().count, 3);
+        // ---- stop: the code no longer works
+        stop.store(true, Ordering::Relaxed);
+        let ended = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!((ended.kind.as_str(), ended.count), ("ended", 3));
+        assert!(import_from_code(&Db::memory(), &info.code).unwrap_err().contains("Can't reach"));
+        // a wrong token is refused even while the code is active
+        let stop2 = Arc::new(AtomicBool::new(false));
+        let info2 = start(&desk, Some("127.0.0.1".into()), stop2.clone(), |_| {}).unwrap();
+        let forged = info2.code.replace("&t=", "&t=x");
+        assert!(import_from_code(&Db::memory(), &forged).unwrap_err().contains("not valid"));
+        stop2.store(true, Ordering::Relaxed);
     }
 }

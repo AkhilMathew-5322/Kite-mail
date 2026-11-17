@@ -125,7 +125,8 @@ function pairCardHtml() {
   return `<section class="card pair-card">
     <h3>${icon('qr', 18)} Pair a phone</h3>
     <p class="muted small">Copies your accounts (with sign-ins), contacts, tasks, themes, signatures and Nextcloud connection to Kite Mail on Android.
-      Everything is encrypted with a one-time key inside the QR code and can be downloaded once, within 10 minutes, on your local network. Mail itself syncs from your mail servers.</p>
+      Everything is encrypted with a key that exists only inside the QR code. The code works for 10 minutes on your local network – for one or several phones,
+      or to re-pair the same phone – until you press Stop. Mail itself syncs from your mail servers.</p>
     <div id="pair-area"><button class="primary" id="pair-start">${icon('qr', 16)} Show pairing QR code</button></div>
   </section>`;
 }
@@ -142,16 +143,21 @@ function pairWire() {
           <div class="pair-side">
             <b>Scan with Kite Mail on your phone</b>
             <p class="muted small">Phone app → Settings → Copy setup from your computer → Scan QR code.<br>${info.accounts} account(s) will be copied.</p>
-            <p class="small" id="pair-status">${icon('clock', 14)} Waiting… <span id="pair-left"></span></p>
+            <p class="small" id="pair-status">${icon('clock', 14)} Waiting for a phone…</p>
+            <p class="small muted" id="pair-left"></p>
+            <div class="set-actions"><button class="ghost danger" id="pair-stop">${icon('x', 15)} Stop</button>
+              <button class="ghost" id="pair-new">${icon('refresh', 15)} New code</button></div>
             <details class="adv"><summary>Can't scan? Show code</summary><textarea readonly rows="3" class="code">${esc(info.code)}</textarea></details>
           </div></div>`;
+      $('#pair-stop').onclick = () => invoke('pair_stop');
+      $('#pair-new').onclick = () => start.onclick();
       clearInterval(pairTimer);
       pairTimer = setInterval(() => {
         left--;
         const el = $('#pair-left');
         if (!el) { clearInterval(pairTimer); return; }
-        el.textContent = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')} left`;
-        if (left <= 0) { clearInterval(pairTimer); $('#pair-status').innerHTML = `${icon('junk', 14)} Code expired – show a new one.`; }
+        el.textContent = `Code valid for ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`;
+        if (left <= 0) clearInterval(pairTimer);
       }, 1000);
     } catch (e) { toast(errText(e), 'error'); }
   };
@@ -159,6 +165,21 @@ function pairWire() {
   if (go) go.onclick = () => importPairing($('#pair-code').value);
   const scan = $('#pair-scan');
   if (scan) scan.onclick = scanPairing;
+}
+
+/** Live updates from the pairing server: a phone downloaded the setup, or the code ended. */
+function onPairEvent(e) {
+  const st = $('#pair-status');
+  if (e.kind === 'paired') {
+    toast(e.count === 1 ? 'Phone paired successfully' : `Paired ${e.count} devices`, 'ok');
+    if (st) st.innerHTML = `${icon('check', 14)} ${e.count} device${e.count > 1 ? 's' : ''} paired – the code still works for more phones until it expires or you press Stop.`;
+    return;
+  }
+  clearInterval(pairTimer);
+  if (st) st.innerHTML = `${icon(e.count ? 'check' : 'junk', 14)} Code ${e.count ? `used by ${e.count} device${e.count > 1 ? 's' : ''} and ` : ''}closed. Press <b>New code</b> to pair another phone.`;
+  const left = $('#pair-left'); if (left) left.textContent = '';
+  const stop = $('#pair-stop'); if (stop) stop.hidden = true;
+  const qr = $('.pair-box .qr'); if (qr) qr.classList.add('expired');
 }
 
 async function scanPairing() {
@@ -224,41 +245,51 @@ function mobileOnboarding() {
 // ------------------------------------------------------------------ touch: swipe actions & pull-to-refresh
 (function touchGestures() {
   const box = $('#messages');
-  let sx = 0, sy = 0, row = null, dx = 0, mode = null, pull = 0;
+  const ptr = $('#ptr');
+  let sx = 0, sy = 0, row = null, dx = 0, mode = null, pull = 0, startTop = 0;
+  const reset = () => {
+    if (row) { row.style.transform = ''; row.classList.remove('swipe-left', 'swipe-right'); }
+    ptr.style.height = '';
+    ptr.classList.remove('ready', 'pulling');
+    row = null; mode = null; dx = 0; pull = 0;
+  };
   box.addEventListener('touchstart', (e) => {
+    reset();
     const t = e.touches[0];
-    sx = t.clientX; sy = t.clientY; dx = 0; pull = 0; mode = null;
+    sx = t.clientX; sy = t.clientY; startTop = box.scrollTop;
     row = e.target.closest('.msg');
   }, { passive: true });
   box.addEventListener('touchmove', (e) => {
     const t = e.touches[0];
     const mx = t.clientX - sx, my = t.clientY - sy;
-    if (!mode) mode = Math.abs(mx) > Math.abs(my) + 6 ? 'swipe' : (box.scrollTop <= 0 && my > 8 ? 'pull' : 'scroll');
+    if (!mode) {
+      if (Math.abs(mx) > Math.abs(my) + 6 && Math.abs(mx) > 12) mode = 'swipe';
+      else if (startTop <= 0 && box.scrollTop <= 0 && my > 12) mode = 'pull';
+      else if (Math.abs(my) > 12) mode = 'scroll';
+    }
     if (mode === 'swipe' && row) {
       dx = Math.max(-140, Math.min(140, mx));
       row.style.transform = `translateX(${dx}px)`;
       row.classList.toggle('swipe-left', dx < -70);
       row.classList.toggle('swipe-right', dx > 70);
     } else if (mode === 'pull') {
-      pull = Math.min(110, my);
-      $('#ptr').style.height = pull + 'px';
-      $('#ptr').classList.toggle('ready', pull > 70);
+      pull = Math.min(90, (my - 12) * 0.6);
+      ptr.classList.add('pulling');
+      ptr.style.height = Math.max(0, pull) + 'px';
+      ptr.classList.toggle('ready', pull > 55);
     }
   }, { passive: true });
   box.addEventListener('touchend', () => {
-    if (mode === 'swipe' && row) {
-      const m = messageByKey(row.dataset.key);
-      row.style.transform = '';
-      row.classList.remove('swipe-left', 'swipe-right');
-      if (m && dx < -70) archiveMessages([m]);
-      if (m && dx > 70) setSeen([m], !m.seen);
-    }
-    if (mode === 'pull') {
-      $('#ptr').style.height = '0';
-      if (pull > 70) syncCurrent();
-    }
-    row = null; mode = null;
+    const m = row && messageByKey(row.dataset.key);
+    const wasSwipe = mode === 'swipe', d = dx, refresh = mode === 'pull' && pull > 55;
+    reset();
+    if (wasSwipe && m && d < -70) archiveMessages([m]);
+    if (wasSwipe && m && d > 70) setSeen([m], !m.seen);
+    if (refresh) syncCurrent();
   });
+  // Android cancels touches when it takes over scrolling – never leave the spinner or a row stuck
+  box.addEventListener('touchcancel', reset);
+  box.addEventListener('scroll', () => { if (mode !== 'pull' && ptr.style.height) reset(); }, { passive: true });
 })();
 
 // ------------------------------------------------------------------ Android back button (history-driven)

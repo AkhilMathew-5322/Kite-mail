@@ -601,9 +601,21 @@ pub async fn pair_start(app: AppHandle, state: State<'_, Shared>) -> Result<crat
     let st = state.inner().clone();
     blocking(move || {
         use tauri::Emitter;
-        crate::pair::start(&st.db, None, move |ok| { let _ = app.emit("pair-done", ok); })
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        if let Some(old) = st.pair_stop.lock().unwrap().replace(stop.clone()) {
+            old.store(true, std::sync::atomic::Ordering::Relaxed); // only one active code at a time
+        }
+        crate::pair::start(&st.db, None, stop, move |e| { let _ = app.emit("pair-event", e); })
     })
     .await
+}
+
+#[tauri::command]
+pub async fn pair_stop(state: State<'_, Shared>) -> Result<(), String> {
+    if let Some(s) = state.pair_stop.lock().unwrap().take() {
+        s.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    Ok(())
 }
 
 #[tauri::command]

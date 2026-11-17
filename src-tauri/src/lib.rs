@@ -96,6 +96,7 @@ pub fn run() {
             commands::nc_backup_now,
             commands::pair_start,
             commands::pair_import,
+            commands::pair_stop,
             commands::file_sizes,
         ])
         .run(tauri::generate_context!())

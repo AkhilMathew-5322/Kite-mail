@@ -30,6 +30,8 @@ pub struct AppState {
     pub db: Db,
     /// Serialises Nextcloud syncs (background timer vs. "Sync now").
     pub nc_lock: Mutex<()>,
+    /// Stop flag of the currently shown pairing QR code.
+    pub pair_stop: Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>,
     sessions: Mutex<HashMap<i64, Arc<Mutex<Option<Conn>>>>>,
     tokens: Mutex<HashMap<i64, (String, Instant)>>,
 }
@@ -45,7 +47,7 @@ const HEADER_QUERY: &str = "(UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER
 
 impl AppState {
     pub fn new(db: Db) -> Self {
-        AppState { db, nc_lock: Mutex::new(()), sessions: Mutex::new(HashMap::new()), tokens: Mutex::new(HashMap::new()) }
+        AppState { db, nc_lock: Mutex::new(()), pair_stop: Mutex::new(None), sessions: Mutex::new(HashMap::new()), tokens: Mutex::new(HashMap::new()) }
     }
 
     // ------------------------------------------------------------------ auth

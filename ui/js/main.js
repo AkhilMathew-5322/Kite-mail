@@ -83,11 +83,7 @@ listen('nc-synced', async ({ payload }) => {
   if (S.tab === 'tasks') renderTasks();
 });
 listen('nc-error', async () => { await loadNc(); if (S.tab === 'settings') renderSettings(); });
-listen('pair-done', ({ payload }) => {
-  const el = $('#pair-status');
-  if (el) el.innerHTML = payload ? `${icon('check', 14)} Phone paired – setup copied.` : `${icon('junk', 14)} Code expired – show a new one.`;
-  if (payload) toast('Phone paired successfully', 'ok');
-});
+listen('pair-event', ({ payload }) => onPairEvent(payload));
 
 // ------------------------------------------------------------------ responsive layout
 const narrowQuery = window.matchMedia('(max-width: 760px)');

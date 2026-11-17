@@ -93,6 +93,11 @@ jobs:
         run: cargo install tauri-cli --version "^2" --locked
       - name: Generate Android project
         run: cargo tauri android init --ci
+      - name: Use Kite Mail's MainActivity (status bar / navigation bar / keyboard insets)
+        run: |
+          F=$(find src-tauri/gen/android -name MainActivity.kt | head -1)
+          echo "Replacing $F"
+          cp src-tauri/android/MainActivity.kt "$F"
       # Signed, optimised release APK when a signing key is configured (see README),
       # otherwise a debug-signed APK that installs fine for testing.
       - name: Build APK
