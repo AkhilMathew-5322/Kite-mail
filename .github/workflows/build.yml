@@ -7,6 +7,8 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+  release:
+    types: [published]   # creating a Release on github.com builds and attaches the installers
   workflow_dispatch:
 
 jobs:
@@ -134,5 +136,7 @@ jobs:
           ls -la release
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
           files: release/*
           generate_release_notes: true
+          fail_on_unmatched_files: true
