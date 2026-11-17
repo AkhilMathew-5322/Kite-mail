@@ -23,7 +23,7 @@ jobs:
             bundles: deb,appimage
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Linux dependencies
         if: runner.os == 'Linux'
@@ -47,7 +47,7 @@ jobs:
       - name: Build installers
         run: cargo tauri build --bundles ${{ matrix.bundles }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: kitemail-${{ runner.os }}
           path: |
@@ -62,8 +62,8 @@ jobs:
     runs-on: ubuntu-22.04
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "17"
@@ -115,7 +115,7 @@ jobs:
             cp "$(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk' | head -1)" "dist/KiteMail-${GITHUB_REF_NAME}-android-arm64-debug.apk"
           fi
           ls -la dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: kitemail-android
           path: dist/*.apk
@@ -126,7 +126,7 @@ jobs:
     needs: [desktop, android]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
       - name: Collect files
