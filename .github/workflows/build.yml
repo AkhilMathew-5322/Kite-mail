@@ -68,6 +68,16 @@ jobs:
           echo "ANDROID_HOME=$ANDROID_HOME"
           echo "NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
           ls "$ANDROID_HOME/platforms" | tail -3
+      # OpenSSL (vendored, for IMAP/SMTP TLS) expects GNU-style tool names; newer NDKs only ship llvm-*.
+      - name: NDK tool aliases for OpenSSL build
+        run: |
+          TB="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          mkdir -p "$HOME/ndk-alias"
+          for t in aarch64-linux-android armv7a-linux-androideabi arm-linux-androideabi x86_64-linux-android i686-linux-android; do
+            for tool in ar ranlib nm strip; do ln -sf "$TB/llvm-$tool" "$HOME/ndk-alias/$t-$tool"; done
+          done
+          echo "$HOME/ndk-alias" >> "$GITHUB_PATH"
+          echo "$TB" >> "$GITHUB_PATH"
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
