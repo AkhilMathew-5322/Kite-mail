@@ -1,6 +1,7 @@
 //! Kite Mail - lightweight desktop & mobile email client.
 
 mod commands;
+mod dav;
 mod db;
 mod grammar;
 #[cfg(test)]
@@ -8,7 +9,9 @@ mod it_tests;
 mod mail;
 mod mime;
 mod models;
+mod nextcloud;
 mod oauth;
+mod pair;
 mod push;
 mod secrets;
 mod smtp;
@@ -18,10 +21,13 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_notification::init());
+    #[cfg(mobile)]
+    let builder = builder.plugin(tauri_plugin_barcode_scanner::init());
+    builder
         .setup(|app| {
             let dir = if cfg!(mobile) {
                 app.path().app_data_dir().unwrap_or_else(|_| db::data_dir())
@@ -33,6 +39,11 @@ pub fn run() {
             let state: mail::Shared = Arc::new(mail::AppState::new(db));
             app.manage(state.clone());
             push::start(app.handle().clone(), state);
+            #[cfg(mobile)]
+            {
+                use tauri_plugin_notification::NotificationExt;
+                let _ = app.notification().request_permission();
+            }
             #[cfg(target_os = "linux")]
             enable_linux_spellcheck(app);
             Ok(())
@@ -75,6 +86,17 @@ pub fn run() {
             commands::call_number,
             commands::backup_account,
             commands::restore_account,
+            commands::app_info,
+            commands::nc_get_config,
+            commands::nc_connect,
+            commands::nc_save_options,
+            commands::nc_disconnect,
+            commands::nc_sync_now,
+            commands::nc_task_lists,
+            commands::nc_backup_now,
+            commands::pair_start,
+            commands::pair_import,
+            commands::file_sizes,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Kite Mail");

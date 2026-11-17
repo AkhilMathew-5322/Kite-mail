@@ -40,7 +40,7 @@ function renderSidebar() {
         const showCount = f.unread > 0 && !NO_COUNT.has(f.special);
         row.innerHTML = `${icon(FOLDER_ICON[f.special] ?? 'folder', 17)}<span class="fname">${esc(f.display)}</span>${showCount ? `<span class="count">${f.unread}</span>` : ''}`;
         row.title = f.display;
-        if (!f.noselect) row.onclick = () => { selectFolder(a.id, f.name); $('#app').classList.remove('drawer'); };
+        if (!f.noselect) row.onclick = () => { selectFolder(a.id, f.name); if ($('#app').classList.contains('drawer')) { $('#app').classList.remove('drawer'); dropLayer('drawer'); } };
         list.appendChild(row);
       }
       box.appendChild(list);
@@ -286,6 +286,7 @@ async function openMessage(m) {
     }
     S.allowRemote = S.settings.remote_images === 'always';
     showReader(view);
+    if ($('#app').classList.contains('narrow') && !$('#app').classList.contains('reading')) pushLayer('reader', () => $('#app').classList.remove('reading'));
     $('#app').classList.add('reading');
   } catch (e) { toast(errText(e), 'error'); }
 }
@@ -507,8 +508,11 @@ $('#bulk').addEventListener('click', (e) => {
 });
 
 $('#btn-load-images').onclick = () => { S.allowRemote = true; renderBody(); };
-$('#btn-back').onclick = () => { $('#app').classList.remove('reading'); };
-$('#btn-drawer').onclick = () => $('#app').classList.toggle('drawer');
+$('#btn-back').onclick = () => { if (!dropLayer('reader')) $('#app').classList.remove('reading'); };
+$('#btn-drawer').onclick = () => {
+  if ($('#app').classList.toggle('drawer')) pushLayer('drawer', () => $('#app').classList.remove('drawer'));
+  else dropLayer('drawer');
+};
 $('#r-add-contact').onclick = () => {
   const s = S.view.summary;
   openContactEditor({ name: s.from_name, email: s.from_addr });

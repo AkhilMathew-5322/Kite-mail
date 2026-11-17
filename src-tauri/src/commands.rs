@@ -490,3 +490,130 @@ pub async fn restore_account(app: AppHandle, state: State<'_, Shared>, account_i
     })
     .await
 }
+
+// ---------------------------------------------------------------- app info
+
+#[tauri::command]
+pub async fn app_info(app: AppHandle) -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({
+        "os": std::env::consts::OS,
+        "mobile": cfg!(mobile),
+        "version": app.package_info().version.to_string(),
+    }))
+}
+
+// ---------------------------------------------------------------- Nextcloud
+
+#[tauri::command]
+pub async fn nc_get_config(state: State<'_, Shared>) -> Result<serde_json::Value, String> {
+    let cfg = crate::nextcloud::load(&state.db);
+    let mut v = serde_json::to_value(&cfg).map_err(|e| e.to_string())?;
+    v["has_password"] = secrets::get(&state.db, crate::nextcloud::PASSWORD_KEY).is_some().into();
+    Ok(v)
+}
+
+/// Connects (or reconnects) Nextcloud: verifies the app password, saves, and runs a first sync.
+#[tauri::command]
+pub async fn nc_connect(app: AppHandle, state: State<'_, Shared>, server: String, user: String, password: String,
+                        contacts_url: Option<String>, tasks_url: Option<String>) -> Result<crate::nextcloud::SyncReport, String> {
+    let st = state.inner().clone();
+    blocking(move || {
+        use tauri::Emitter;
+        let mut cfg = crate::nextcloud::load(&st.db);
+        cfg.server = server.trim().to_string();
+        cfg.user = user.trim().to_string();
+        cfg.contacts_url = contacts_url.unwrap_or_default().trim().to_string();
+        cfg.tasks_url = tasks_url.unwrap_or_default().trim().to_string();
+        cfg.enabled = true;
+        let pw = if password.is_empty() { secrets::get(&st.db, crate::nextcloud::PASSWORD_KEY).unwrap_or_default() } else { password };
+        crate::nextcloud::test_login(&cfg, &pw)?;
+        secrets::set(&st.db, crate::nextcloud::PASSWORD_KEY, &pw)?;
+        crate::nextcloud::save(&st.db, &cfg)?;
+        let rep = crate::nextcloud::sync(&st.db)?;
+        let _ = app.emit("nc-synced", &rep);
+        Ok(rep)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn nc_save_options(state: State<'_, Shared>, options: serde_json::Value) -> Result<(), String> {
+    let mut cfg = crate::nextcloud::load(&state.db);
+    let get_b = |k: &str, d: bool| options.get(k).and_then(|v| v.as_bool()).unwrap_or(d);
+    let get_s = |k: &str, d: &str| options.get(k).and_then(|v| v.as_str()).map(String::from).unwrap_or_else(|| d.to_string());
+    let get_n = |k: &str, d: u32| options.get(k).and_then(|v| v.as_u64()).map(|n| n as u32).unwrap_or(d);
+    cfg.sync_contacts = get_b("sync_contacts", cfg.sync_contacts);
+    cfg.sync_tasks = get_b("sync_tasks", cfg.sync_tasks);
+    cfg.tasks_url = get_s("tasks_url", &cfg.tasks_url);
+    cfg.backup_schedule = get_s("backup_schedule", &cfg.backup_schedule);
+    cfg.backup_folder = get_s("backup_folder", &cfg.backup_folder);
+    cfg.backup_keep = get_n("backup_keep", cfg.backup_keep);
+    cfg.link_threshold_mb = get_n("link_threshold_mb", cfg.link_threshold_mb);
+    cfg.link_expire_days = get_n("link_expire_days", cfg.link_expire_days);
+    crate::nextcloud::save(&state.db, &cfg)
+}
+
+#[tauri::command]
+pub async fn nc_disconnect(state: State<'_, Shared>) -> Result<(), String> {
+    let mut cfg = crate::nextcloud::load(&state.db);
+    cfg.enabled = false;
+    secrets::delete(&state.db, crate::nextcloud::PASSWORD_KEY);
+    crate::nextcloud::save(&state.db, &cfg)
+}
+
+#[tauri::command]
+pub async fn nc_sync_now(app: AppHandle, state: State<'_, Shared>) -> Result<crate::nextcloud::SyncReport, String> {
+    let st = state.inner().clone();
+    blocking(move || {
+        use tauri::Emitter;
+        let _guard = st.nc_lock.lock().unwrap_or_else(|p| p.into_inner());
+        let rep = crate::nextcloud::sync(&st.db)?;
+        let _ = app.emit("nc-synced", &rep);
+        Ok(rep)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn nc_task_lists(state: State<'_, Shared>) -> Result<Vec<(String, String)>, String> {
+    let st = state.inner().clone();
+    blocking(move || crate::nextcloud::task_lists(&st.db, &crate::nextcloud::load(&st.db))).await
+}
+
+/// Backs up an account straight to Nextcloud.
+#[tauri::command]
+pub async fn nc_backup_now(app: AppHandle, state: State<'_, Shared>, account_id: i64) -> Result<String, String> {
+    let st = state.inner().clone();
+    blocking(move || {
+        use tauri::Emitter;
+        let acct = st.db.account(account_id)?;
+        let emitter = app.clone();
+        let dest = crate::push::backup_to_nextcloud(&st, &acct, &|p| { let _ = emitter.emit("backup-progress", &p); })?;
+        Ok(dest)
+    })
+    .await
+}
+
+// ---------------------------------------------------------------- phone pairing
+
+#[tauri::command]
+pub async fn pair_start(app: AppHandle, state: State<'_, Shared>) -> Result<crate::pair::PairInfo, String> {
+    let st = state.inner().clone();
+    blocking(move || {
+        use tauri::Emitter;
+        crate::pair::start(&st.db, None, move |ok| { let _ = app.emit("pair-done", ok); })
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn pair_import(state: State<'_, Shared>, code: String) -> Result<crate::pair::ImportReport, String> {
+    let st = state.inner().clone();
+    blocking(move || crate::pair::import_from_code(&st.db, &code)).await
+}
+
+/// Sizes of local files (used to offer Nextcloud links for large attachments).
+#[tauri::command]
+pub async fn file_sizes(paths: Vec<String>) -> Result<Vec<u64>, String> {
+    Ok(paths.iter().map(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0)).collect())
+}

@@ -73,7 +73,41 @@ CREATE TABLE IF NOT EXISTS drafts(
 "#;
 
 /// Columns added after v0.1 - applied to existing databases, errors ignored if already present.
-const MIGRATIONS: &[&str] = &["ALTER TABLE messages ADD COLUMN preview TEXT NOT NULL DEFAULT ''"];
+const MIGRATIONS: &[&str] = &[
+    "ALTER TABLE messages ADD COLUMN preview TEXT NOT NULL DEFAULT ''",
+    // v0.3: CardDAV / CalDAV sync state
+    "ALTER TABLE contacts ADD COLUMN uid TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE contacts ADD COLUMN href TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE contacts ADD COLUMN etag TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE contacts ADD COLUMN raw TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE contacts ADD COLUMN dirty INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE contacts ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE todos ADD COLUMN dav_uid TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE todos ADD COLUMN href TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE todos ADD COLUMN etag TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE todos ADD COLUMN raw TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE todos ADD COLUMN dirty INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE todos ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
+];
+
+/// Sync bookkeeping for one contact / todo row.
+#[derive(Debug, Clone)]
+pub struct SyncRow {
+    pub id: i64,
+    pub uid: String,
+    pub href: String,
+    pub etag: String,
+    pub raw: String,
+    pub dirty: bool,
+    pub deleted: bool,
+}
+
+pub fn new_uid() -> String {
+    use rand::Rng;
+    let r: u128 = rand::thread_rng().gen();
+    let h = format!("{r:032x}");
+    format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32])
+}
 
 fn now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
@@ -411,7 +445,7 @@ impl Db {
         let like = format!("%{}%", query.trim());
         let mut st = c.prepare(
             "SELECT id,name,email,phone,company,notes,favorite FROM contacts
-             WHERE ?1='%%' OR name LIKE ?1 OR email LIKE ?1 OR phone LIKE ?1 OR company LIKE ?1
+             WHERE deleted=0 AND (?1='%%' OR name LIKE ?1 OR email LIKE ?1 OR phone LIKE ?1 OR company LIKE ?1)
              ORDER BY favorite DESC, name COLLATE NOCASE, email",
         ).map_err(e)?;
         let rows = st.query_map([like], |r| Ok(Contact {
@@ -425,21 +459,24 @@ impl Db {
         let c = self.c();
         if ct.id > 0 {
             c.execute(
-                "UPDATE contacts SET name=?2,email=?3,phone=?4,company=?5,notes=?6,favorite=?7,updated=?8 WHERE id=?1",
+                "UPDATE contacts SET name=?2,email=?3,phone=?4,company=?5,notes=?6,favorite=?7,updated=?8,dirty=1 WHERE id=?1",
                 params![ct.id, ct.name, ct.email, ct.phone, ct.company, ct.notes, ct.favorite, now()],
             ).map_err(e)?;
             Ok(ct.id)
         } else {
             c.execute(
-                "INSERT INTO contacts(name,email,phone,company,notes,favorite,updated) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                params![ct.name, ct.email, ct.phone, ct.company, ct.notes, ct.favorite, now()],
+                "INSERT INTO contacts(name,email,phone,company,notes,favorite,updated,uid,dirty) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,1)",
+                params![ct.name, ct.email, ct.phone, ct.company, ct.notes, ct.favorite, now(), new_uid()],
             ).map_err(e)?;
             Ok(c.last_insert_rowid())
         }
     }
 
+    /// Synced contacts become tombstones until the server deletion succeeds.
     pub fn delete_contact(&self, id: i64) -> R<()> {
-        self.c().execute("DELETE FROM contacts WHERE id=?1", [id]).map_err(e)?;
+        let c = self.c();
+        c.execute("UPDATE contacts SET deleted=1, dirty=1 WHERE id=?1 AND href<>''", [id]).map_err(e)?;
+        c.execute("DELETE FROM contacts WHERE id=?1 AND href=''", [id]).map_err(e)?;
         Ok(())
     }
 
@@ -454,7 +491,7 @@ impl Db {
         let mut out: Vec<AddressSuggestion> = Vec::new();
         let mut seen = HashSet::new();
         let mut st = c.prepare(
-            "SELECT name,email FROM contacts WHERE email<>'' AND (name LIKE ?1 OR email LIKE ?1)
+            "SELECT name,email FROM contacts WHERE deleted=0 AND email<>'' AND (name LIKE ?1 OR email LIKE ?1)
              ORDER BY favorite DESC, name COLLATE NOCASE LIMIT 20",
         ).map_err(e)?;
         for r in st.query_map([&like], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(e)?.flatten() {
@@ -486,7 +523,7 @@ impl Db {
     pub fn todos(&self) -> R<Vec<Todo>> {
         let c = self.c();
         let mut st = c.prepare(
-            "SELECT id,title,notes,due,done,priority,account_id,folder,uid,created FROM todos
+            "SELECT id,title,notes,due,done,priority,account_id,folder,uid,created FROM todos WHERE deleted=0
              ORDER BY done, CASE WHEN due IS NULL THEN 1 ELSE 0 END, due, priority DESC, id DESC",
         ).map_err(e)?;
         let rows = st.query_map([], Self::row_to_todo).map_err(e)?;
@@ -499,13 +536,13 @@ impl Db {
             // Changing the due date re-arms the reminder.
             c.execute(
                 "UPDATE todos SET title=?2,notes=?3,notified=CASE WHEN due IS ?4 THEN notified ELSE 0 END,due=?4,done=?5,priority=?6,
-                 account_id=?7,folder=?8,uid=?9 WHERE id=?1",
+                 account_id=?7,folder=?8,uid=?9,dirty=1 WHERE id=?1",
                 params![t.id, t.title, t.notes, t.due, t.done, t.priority, t.account_id, t.folder, t.uid],
             ).map_err(e)?;
             Ok(t.id)
         } else {
             c.execute(
-                "INSERT INTO todos(title,notes,due,done,priority,account_id,folder,uid,created) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                "INSERT INTO todos(title,notes,due,done,priority,account_id,folder,uid,created,dirty) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,1)",
                 params![t.title, t.notes, t.due, t.done, t.priority, t.account_id, t.folder, t.uid, now()],
             ).map_err(e)?;
             Ok(c.last_insert_rowid())
@@ -513,7 +550,106 @@ impl Db {
     }
 
     pub fn delete_todo(&self, id: i64) -> R<()> {
-        self.c().execute("DELETE FROM todos WHERE id=?1", [id]).map_err(e)?;
+        let c = self.c();
+        c.execute("UPDATE todos SET deleted=1, dirty=1 WHERE id=?1 AND href<>''", [id]).map_err(e)?;
+        c.execute("DELETE FROM todos WHERE id=?1 AND href=''", [id]).map_err(e)?;
+        Ok(())
+    }
+
+    // ---------- DAV sync bookkeeping (table = "contacts" | "todos") ----------
+    fn tbl(table: &str) -> R<&'static str> {
+        match table { "contacts" => Ok("contacts"), "todos" => Ok("todos"), _ => Err("bad table".into()) }
+    }
+
+    pub fn sync_rows(&self, table: &str) -> R<Vec<SyncRow>> {
+        let t = Self::tbl(table)?;
+        // the todos table already has a `uid` column (linked email UID), so DAV UIDs use `uid` only for contacts
+        let uid_col = if t == "todos" { "dav_uid" } else { "uid" };
+        let c = self.c();
+        let sql = format!("SELECT id, {uid_col}, href, etag, raw, dirty, deleted FROM {t}");
+        let mut st = c.prepare(&sql).map_err(e)?;
+        let rows = st.query_map([], |r| Ok(SyncRow {
+            id: r.get(0)?, uid: r.get(1)?, href: r.get(2)?, etag: r.get(3)?, raw: r.get(4)?, dirty: r.get(5)?, deleted: r.get(6)?,
+        })).map_err(e)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(e)
+    }
+
+    pub fn mark_synced(&self, table: &str, id: i64, uid: &str, href: &str, etag: &str, raw: &str) -> R<()> {
+        let t = Self::tbl(table)?;
+        let uid_col = if t == "todos" { "dav_uid" } else { "uid" };
+        self.c().execute(
+            &format!("UPDATE {t} SET {uid_col}=?2, href=?3, etag=?4, raw=?5, dirty=0 WHERE id=?1"),
+            params![id, uid, href, etag, raw],
+        ).map_err(e)?;
+        Ok(())
+    }
+
+    pub fn purge(&self, table: &str, id: i64) -> R<()> {
+        let t = Self::tbl(table)?;
+        self.c().execute(&format!("DELETE FROM {t} WHERE id=?1"), [id]).map_err(e)?;
+        Ok(())
+    }
+
+    pub fn contact_by_id(&self, id: i64) -> R<Option<Contact>> {
+        self.c().query_row(
+            "SELECT id,name,email,phone,company,notes,favorite FROM contacts WHERE id=?1", [id],
+            |r| Ok(Contact { id: r.get(0)?, name: r.get(1)?, email: r.get(2)?, phone: r.get(3)?, company: r.get(4)?, notes: r.get(5)?, favorite: r.get(6)? }),
+        ).optional().map_err(e)
+    }
+
+    pub fn todo_by_id(&self, id: i64) -> R<Option<Todo>> {
+        self.c().query_row(
+            "SELECT id,title,notes,due,done,priority,account_id,folder,uid,created FROM todos WHERE id=?1", [id], Self::row_to_todo,
+        ).optional().map_err(e)
+    }
+
+    /// Writes a contact that came from the server (not dirty). `id` = existing local row, if any.
+    pub fn apply_remote_contact(&self, id: Option<i64>, ct: &Contact, uid: &str, href: &str, etag: &str, raw: &str) -> R<()> {
+        let c = self.c();
+        match id {
+            Some(id) => c.execute(
+                "UPDATE contacts SET name=?2,email=?3,phone=?4,company=?5,notes=?6,favorite=?7,uid=?8,href=?9,etag=?10,raw=?11,dirty=0,deleted=0,updated=?12 WHERE id=?1",
+                params![id, ct.name, ct.email, ct.phone, ct.company, ct.notes, ct.favorite, uid, href, etag, raw, now()],
+            ),
+            None => c.execute(
+                "INSERT INTO contacts(name,email,phone,company,notes,favorite,uid,href,etag,raw,dirty,deleted,updated) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,0,0,?11)",
+                params![ct.name, ct.email, ct.phone, ct.company, ct.notes, ct.favorite, uid, href, etag, raw, now()],
+            ),
+        }.map_err(e)?;
+        Ok(())
+    }
+
+    pub fn apply_remote_todo(&self, id: Option<i64>, t: &Todo, uid: &str, href: &str, etag: &str, raw: &str) -> R<()> {
+        let c = self.c();
+        match id {
+            Some(id) => c.execute(
+                "UPDATE todos SET title=?2,notes=?3,notified=CASE WHEN due IS ?4 THEN notified ELSE 0 END,due=?4,done=?5,priority=?6,
+                 account_id=COALESCE(?7,account_id),folder=COALESCE(?8,folder),uid=COALESCE(?9,uid),dav_uid=?10,href=?11,etag=?12,raw=?13,dirty=0,deleted=0 WHERE id=?1",
+                params![id, t.title, t.notes, t.due, t.done, t.priority, t.account_id, t.folder, t.uid, uid, href, etag, raw],
+            ),
+            None => c.execute(
+                "INSERT INTO todos(title,notes,due,done,priority,account_id,folder,uid,created,dav_uid,href,etag,raw,dirty,deleted,notified)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,0,0,?14)",
+                params![t.title, t.notes, t.due, t.done, t.priority, t.account_id, t.folder, t.uid, if t.created > 0 { t.created } else { now() },
+                        uid, href, etag, raw, t.due.map(|d| d <= now()).unwrap_or(false)],
+            ),
+        }.map_err(e)?;
+        Ok(())
+    }
+
+    /// Ensures every row has a DAV UID (rows created before sync was enabled).
+    pub fn ensure_uids(&self) -> R<()> {
+        let c = self.c();
+        for (t, col) in [("contacts", "uid"), ("todos", "dav_uid")] {
+            let ids: Vec<i64> = {
+                let mut st = c.prepare(&format!("SELECT id FROM {t} WHERE {col}=''")).map_err(e)?;
+                let it = st.query_map([], |r| r.get(0)).map_err(e)?;
+                it.flatten().collect()
+            };
+            for id in ids {
+                c.execute(&format!("UPDATE {t} SET {col}=?2 WHERE id=?1"), params![id, new_uid()]).map_err(e)?;
+            }
+        }
         Ok(())
     }
 
@@ -524,7 +660,7 @@ impl Db {
         let list = {
             let mut st = tx.prepare(
                 "SELECT id,title,notes,due,done,priority,account_id,folder,uid,created FROM todos
-                 WHERE done=0 AND notified=0 AND due IS NOT NULL AND due<=?1",
+                 WHERE deleted=0 AND done=0 AND notified=0 AND due IS NOT NULL AND due<=?1",
             ).map_err(e)?;
             let rows = st.query_map([now()], Self::row_to_todo).map_err(e)?;
             rows.collect::<rusqlite::Result<Vec<_>>>().map_err(e)?

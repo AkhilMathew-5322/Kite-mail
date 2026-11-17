@@ -47,6 +47,7 @@ function renderSettings() {
           ${a.kind !== 'imap' ? `<button class="ghost" data-a="reconnect">${icon('refresh', 15)} Reconnect</button>` : ''}
           <button class="ghost" data-a="backup">${icon('download', 15)} Backup</button>
           <button class="ghost" data-a="restore">${icon('upload', 15)} Restore</button>
+          ${S.nc.enabled ? `<button class="ghost" data-a="ncbackup" title="Back up to Nextcloud now">${icon('cloud', 15)} To Nextcloud</button>` : ''}
           <button class="ghost danger" data-a="remove">${icon('trash', 15)}</button>
         </div>
         <label class="sig">Signature<textarea rows="3" data-sig="${a.id}" placeholder="e.g. Your name · Title · Company · +971 …">${esc((st.signatures || {})[a.id] || '')}</textarea></label>
@@ -85,19 +86,16 @@ function renderSettings() {
     <div class="set-row"><span>Remote images</span>${seg('remote_images', st.remote_images, [['ask', 'Ask (block trackers)'], ['always', 'Always load']])}</div>
   </section>
 
-  <section class="card soon">
-    <h3>${icon('cloud', 18)} Integrations <span class="pill">Phase 2</span></h3>
-    <div class="soon-grid">
-      <div>${icon('cloud', 22)}<b>Nextcloud</b><small>Contacts (CardDAV) & tasks (CalDAV) sync, backups to Nextcloud, large attachments as share links</small></div>
-      <div>${icon('qr', 22)}<b>Pair your phone</b><small>Scan a QR code in the Android app to copy accounts, contacts, tasks and themes</small></div>
-    </div>
-  </section>
+  ${pairCardHtml()}
+  ${ncCardHtml()}
 
   <section class="card">
     <h3>${icon('info', 18)} About</h3>
-    <p class="muted small">Kite Mail 0.2.0 · Tauri + Rust · your mail, contacts and tasks are stored only on this device and your mail servers.</p>
+    <p class="muted small">Kite Mail 0.3.0 · Tauri + Rust · your mail, contacts and tasks are stored only on this device and your mail servers.</p>
   </section>`;
   renderThemeEditor();
+  ncWire();
+  pairWire();
 }
 
 function renderThemeEditor() {
@@ -164,6 +162,11 @@ $('#settings-page').addEventListener('click', async (e) => {
   if (segBtn) {
     const name = segBtn.closest('[data-seg]').dataset.seg;
     const v = segBtn.dataset.v;
+    if (name.startsWith('nc_')) {
+      await ncSaveOption({ [name.slice(3)]: v });
+      renderSettings();
+      return;
+    }
     if (name === 'callmode') {
       const tpl = v === 'tel' ? '' : v === '3cx' ? (S.settings.call_template.includes('/webclient') ? S.settings.call_template : 'https://YOURPBX.3cx.ae/webclient/#/call?phone={number}') : (S.settings.call_template || 'https://');
       await saveSettings({ call_template: tpl });
@@ -199,12 +202,18 @@ $('#settings-page').addEventListener('click', async (e) => {
     if (a === 'reconnect') reconnect(id);
     if (a === 'remove' && (await removeAccount(id))) renderSettings();
     if (a === 'backup' || a === 'restore') runBackup(id, a, card);
+    if (a === 'ncbackup') runBackup(id, a, card);
   }
 });
 
 $('#settings-page').addEventListener('change', async (e) => {
   const t = e.target;
+  if (t.dataset.toggle && t.dataset.toggle.startsWith('nc_')) { await ncSaveOption({ [t.dataset.toggle.slice(3)]: t.checked }); queueNcSync(); return; }
   if (t.dataset.toggle) { await saveSettings({ [t.dataset.toggle]: t.checked }); if (t.dataset.toggle === 'dark_emails') renderBody(); }
+  const ncNum = { 'nc-bkeep': 'backup_keep', 'nc-lmb': 'link_threshold_mb', 'nc-lexp': 'link_expire_days' }[t.id];
+  if (ncNum) return ncSaveOption({ [ncNum]: Math.max(0, Number(t.value) || 0) });
+  if (t.id === 'nc-bfolder') return ncSaveOption({ backup_folder: t.value.trim() || 'Kite Mail Backups' });
+  if (t.id === 'nc-tasklist') { await ncSaveOption({ tasks_url: t.value }); queueNcSync(); return; }
   if (t.dataset.sig) { await saveSettings({ signatures: { ...(S.settings.signatures || {}), [t.dataset.sig]: t.value.trim() } }); toast('Signature saved', 'ok'); }
   if (t.id === 'lt-url') saveSettings({ lt_url: t.value.trim() });
   if (t.id === 'lt-lang') saveSettings({ lt_lang: t.value });
@@ -223,6 +232,11 @@ async function runBackup(accountId, kind, card) {
   const prog = $('.progress', card);
   card.querySelectorAll('[data-a]').forEach((b) => (b.disabled = true));
   try {
+    if (kind === 'ncbackup') {
+      const dest = await invoke('nc_backup_now', { accountId });
+      toast(`Backed up to Nextcloud: ${dest}`, 'ok');
+      return;
+    }
     const r = await invoke(kind === 'backup' ? 'backup_account' : 'restore_account', { accountId });
     if (r) toast(kind === 'backup' ? `Backup complete: ${r.count} messages saved` : `Restore complete: ${r.added} added, ${r.skipped} already present`, 'ok');
   } catch (e) { toast(errText(e), 'error'); }

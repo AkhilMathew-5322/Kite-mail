@@ -72,6 +72,7 @@ function renderTasks() {
 async function saveTodo(t, quiet = false) {
   try {
     const saved = await invoke('save_todo', { todo: t });
+    queueNcSync();
     await loadTodos();
     renderTasks();
     if (!quiet) toast('Task saved', 'ok');
@@ -151,7 +152,7 @@ $('#task-list').addEventListener('click', async (e) => {
     setTimeout(() => saveTodo({ ...t, done: !t.done }, true), 250);
   }
   if (act === 'prio') saveTodo({ ...t, priority: t.priority ? 0 : 1 }, true);
-  if (act === 'del') { await invoke('delete_todo', { id: t.id }); await loadTodos(); renderTasks(); }
+  if (act === 'del') { await invoke('delete_todo', { id: t.id }); queueNcSync(); await loadTodos(); renderTasks(); }
   if (act === 'edit') { const nt = await editTask(t); if (nt) saveTodo(nt); }
   if (act === 'mail') {
     switchTab('mail');

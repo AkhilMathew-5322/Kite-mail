@@ -150,13 +150,13 @@ fn end_to_end_imap_smtp() {
         in_reply_to: Some("<inv-1@example.com>".into()), references: None,
         attachments: vec![tmp.to_string_lossy().into_owned()], forward_from: None,
         reply_to_msg: Some(MsgRef { folder: "Projects/TLR".into(), uid: moved[0].uid }),
-        draft: None, local_draft_id: None, message_id: None,
+        draft: None, local_draft_id: None, message_id: None, link_large: false,
     }).unwrap();
     st.send(&acct, &Draft {
         account_id: acct.id, to: "dave@example.com".into(), cc: "".into(), bcc: "".into(),
         subject: "Fwd: Café invoice".into(), body: "FYI".into(), in_reply_to: None, references: None,
         attachments: vec![], forward_from: Some(MsgRef { folder: "Projects/TLR".into(), uid: moved[0].uid }), reply_to_msg: None,
-        draft: None, local_draft_id: None, message_id: None,
+        draft: None, local_draft_id: None, message_id: None, link_large: false,
     }).unwrap();
 
     let mut sent_files: Vec<_> = std::fs::read_dir(out_dir).unwrap().map(|e| e.unwrap().path()).filter(|p| mine(p)).collect();
@@ -191,7 +191,7 @@ fn draft(account_id: i64, to: &str, subject: &str, body: &str) -> Draft {
     Draft {
         account_id, to: to.into(), cc: String::new(), bcc: "hidden@example.com".into(), subject: subject.into(), body: body.into(),
         in_reply_to: None, references: None, attachments: vec![], forward_from: None, reply_to_msg: None,
-        draft: None, local_draft_id: None, message_id: None,
+        draft: None, local_draft_id: None, message_id: None, link_large: false,
     }
 }
 
@@ -296,4 +296,130 @@ fn end_to_end_phase1_features() {
     assert!(changed && started.elapsed().as_secs() < 10, "IDLE woke up on new mail");
     let new = st.sync_collect_new(&acct, "INBOX", 100).unwrap();
     assert_eq!(new.iter().map(|m| m.subject.as_str()).collect::<Vec<_>>(), vec!["pushed"]);
+}
+
+/// Nextcloud features against real DAV servers (Radicale for CardDAV/CalDAV, WsgiDAV for files,
+/// share API mocked) – see README "Development". Skipped unless LM_IT=1.
+#[test]
+fn end_to_end_nextcloud() {
+    if std::env::var("LM_IT").is_err() {
+        eprintln!("skipped (set LM_IT=1)");
+        return;
+    }
+    use crate::dav::Dav;
+    use crate::nextcloud::{self, NcConfig};
+    let base = "http://127.0.0.1:8090";
+    let cards = format!("{base}/radicale/tester/contacts/");
+    let tasks = format!("{base}/radicale/tester/tasks/");
+    let d = Dav::new("tester", "secret");
+    // clean server collections
+    for r in d.list(&cards).unwrap() { d.delete(&crate::dav::resolve(&cards, &r.href), None).unwrap(); }
+    for r in d.list(&tasks).unwrap() { d.delete(&crate::dav::resolve(&tasks, &r.href), None).unwrap(); }
+
+    // things created on "the phone" directly in Nextcloud
+    let phone_card = "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:phone-1\r\nFN:Ahmed R.\r\nN:R.;Ahmed;;;\r\nEMAIL;TYPE=WORK:ahmed@example.ae\r\nTEL;TYPE=CELL:+971 50 111\r\nADR;TYPE=WORK:;;DIFC Gate 3;Dubai;;;UAE\r\nBDAY:1988-05-04\r\nEND:VCARD\r\n";
+    d.put(&format!("{cards}phone-1.vcf"), "text/vcard", phone_card, None).unwrap();
+    let phone_task = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Phone//EN\r\nBEGIN:VTODO\r\nUID:ptask-1\r\nSUMMARY:Renew trade licence\r\nDUE:20261201T050000Z\r\nCATEGORIES:Admin\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
+    d.put(&format!("{tasks}ptask-1.ics"), "text/calendar", phone_task, None).unwrap();
+    let event = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//x//EN\r\nBEGIN:VEVENT\r\nUID:ev-1\r\nSUMMARY:Not a task\r\nDTSTART:20261201T050000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    d.put(&format!("{tasks}ev-1.ics"), "text/calendar", event, None).unwrap();
+
+    let st = AppState::new(Db::memory());
+    let db = &st.db;
+    // created in Kite Mail before Nextcloud was connected
+    let sara = db.save_contact(&Contact { name: "Sara Khan".into(), email: "sara@kb.com".into(), ..Default::default() }).unwrap();
+    let todo = db.save_todo(&Todo { title: "Send Q4 invoices".into(), due: Some(2_000_000_000), ..Default::default() }).unwrap();
+
+    let cfg = NcConfig { enabled: true, server: base.into(), user: "tester".into(), contacts_url: cards.clone(), tasks_url: tasks.clone(), backup_keep: 2, link_threshold_mb: 1, ..Default::default() };
+    nextcloud::test_login(&cfg, "secret").unwrap();
+    assert!(nextcloud::test_login(&cfg, "wrong").unwrap_err().contains("rejected"), "bad password reported clearly");
+    nextcloud::save(db, &cfg).unwrap();
+    crate::secrets::set(db, nextcloud::PASSWORD_KEY, "secret").unwrap();
+
+    // ---- first sync: both directions, events ignored
+    let r = nextcloud::sync(db).unwrap();
+    assert_eq!((r.contacts_down, r.contacts_up, r.tasks_down, r.tasks_up), (1, 1, 1, 1), "{r:?}");
+    let ahmed = db.contacts("Ahmed").unwrap().pop().unwrap();
+    assert_eq!((ahmed.email.as_str(), ahmed.phone.as_str()), ("ahmed@example.ae", "+971 50 111"));
+    assert_eq!(db.todos().unwrap().iter().filter(|t| t.title == "Renew trade licence").count(), 1);
+    assert_eq!(d.list(&cards).unwrap().len(), 2);
+    // nothing changed -> nothing transferred
+    let r = nextcloud::sync(db).unwrap();
+    assert_eq!((r.contacts_down, r.contacts_up, r.tasks_down, r.tasks_up, r.deleted), (0, 0, 0, 0, 0), "idempotent: {r:?}");
+
+    // ---- edit in Kite Mail -> server keeps the fields we don't manage
+    db.save_contact(&Contact { phone: "+971 55 999".into(), company: "Gulf Ventures".into(), ..ahmed.clone() }).unwrap();
+    let t = db.todos().unwrap().into_iter().find(|t| t.id == todo).unwrap();
+    db.save_todo(&Todo { done: true, ..t }).unwrap();
+    let r = nextcloud::sync(db).unwrap();
+    assert_eq!((r.contacts_up, r.tasks_up), (1, 1));
+    let (srv, _) = d.get(&format!("{cards}phone-1.vcf")).unwrap();
+    assert!(srv.contains("+971 55 999") && srv.contains("Gulf Ventures"));
+    assert!(srv.contains("ADR;TYPE=WORK") && srv.contains("BDAY:1988-05-04"), "phone-only fields preserved:\n{srv}");
+    let srv_tasks: Vec<String> = d.multiget(&tasks, &d.list_todos(&tasks).unwrap().into_iter().map(|r| r.href).collect::<Vec<_>>(), true).unwrap().into_iter().map(|x| x.2).collect();
+    assert!(srv_tasks.iter().any(|x| x.contains("Send Q4 invoices") && x.contains("STATUS:COMPLETED")));
+
+    // ---- edit on the server (phone) -> pulled
+    let (cur, etag) = d.get(&format!("{cards}phone-1.vcf")).unwrap();
+    let changed = cur.replace("FN:Ahmed R.", "FN:Ahmed Rahman");
+    d.put(&format!("{cards}phone-1.vcf"), "text/vcard", &changed, Some(&etag)).unwrap();
+    assert_eq!(nextcloud::sync(db).unwrap().contacts_down, 1);
+    assert_eq!(db.contact_by_id(ahmed.id).unwrap().unwrap().name, "Ahmed Rahman");
+
+    // ---- conflict: both sides edit -> server wins, no duplicate
+    let (cur, etag) = d.get(&format!("{cards}phone-1.vcf")).unwrap();
+    d.put(&format!("{cards}phone-1.vcf"), "text/vcard", &cur.replace("NOTE:", "X-NOTE:").replace("END:VCARD", "NOTE:server edit\r\nEND:VCARD"), Some(&etag)).unwrap();
+    db.save_contact(&Contact { notes: "local edit".into(), ..db.contact_by_id(ahmed.id).unwrap().unwrap() }).unwrap();
+    nextcloud::sync(db).unwrap();
+    assert_eq!(db.contact_by_id(ahmed.id).unwrap().unwrap().notes, "server edit");
+    assert_eq!(d.list(&cards).unwrap().len(), 2);
+
+    // ---- deletions both ways
+    db.delete_contact(sara).unwrap();
+    assert!(db.contacts("Sara").unwrap().is_empty(), "hidden immediately");
+    d.delete(&format!("{tasks}ptask-1.ics"), None).unwrap();
+    let r = nextcloud::sync(db).unwrap();
+    assert_eq!(r.deleted, 2);
+    assert_eq!(d.list(&cards).unwrap().len(), 1, "Sara removed from server");
+    assert!(db.todos().unwrap().iter().all(|t| t.title != "Renew trade licence"), "server deletion pulled");
+
+    // ---- backup to Nextcloud with retention (keep 2)
+    let mut raw = raw_session_for("tester3@localhost");
+    wipe(&mut raw);
+    raw.append("INBOX", plain("backup-me", "Sun, 15 Nov 2026 09:00:00 +0000")).unwrap();
+    let mut acct = account(0);
+    acct.email = "tester3@localhost".into();
+    acct.username = "tester3@localhost".into();
+    acct.id = db.insert_account(&acct).unwrap();
+    crate::secrets::set(db, &crate::secrets::password_key(acct.id), "secret123").unwrap();
+    let dir = "/tmp/davroot/files/Kite Mail Backups/tester3@localhost";
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::create_dir_all(dir).unwrap();
+    for old in ["2026-01-01", "2026-02-01"] {
+        std::fs::write(format!("{dir}/kitemail-backup-tester3_at_localhost-{old}.zip"), b"old").unwrap();
+    }
+    let shared = std::sync::Arc::new(st);
+    let dest = crate::push::backup_to_nextcloud(&shared, &acct, &|_| {}).unwrap();
+    assert!(dest.starts_with("Kite Mail Backups/tester3@localhost/kitemail-backup-"));
+    let mut names: Vec<String> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    names.sort();
+    assert_eq!(names.len(), 2, "retention keeps 2: {names:?}");
+    assert!(names[0].contains("2026-02-01"));
+    let zip = std::fs::metadata(format!("{dir}/{}", names[1])).unwrap();
+    assert!(zip.len() > 200, "real backup uploaded");
+    assert!(!nextcloud::backup_due(&nextcloud::load(&shared.db), "tester3@localhost"));
+
+    // ---- large attachment becomes a share link
+    let big = std::env::temp_dir().join("Q4 report big.pdf");
+    std::fs::write(&big, vec![b'x'; 1_200_000]).unwrap();
+    let small = std::env::temp_dir().join("note.txt");
+    std::fs::write(&small, b"small").unwrap();
+    let mut body = "Please see attached.\n\nOn Mon, Sara wrote:\n> hi".to_string();
+    let mut files = vec![big.to_string_lossy().into_owned(), small.to_string_lossy().into_owned()];
+    assert_eq!(nextcloud::linkify_attachments(&shared.db, &mut body, &mut files).unwrap(), 1);
+    assert_eq!(files, vec![small.to_string_lossy().into_owned()], "small file still attached");
+    assert!(body.contains("📎 Q4 report big.pdf (1.1 MB): http://localhost:8090/s/"), "{body}");
+    assert!(body.find("http://localhost").unwrap() < body.find("On Mon").unwrap(), "links above the quote");
+    let day = chrono::Local::now().format("%Y-%m-%d").to_string();
+    assert!(std::path::Path::new(&format!("/tmp/davroot/files/Kite Mail Attachments/{day}/Q4 report big.pdf")).exists());
 }

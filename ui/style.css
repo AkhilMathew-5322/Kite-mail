@@ -397,3 +397,29 @@ dialog footer { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
 #account-dlg, #account-dlg[open] { height: fit-content !important; min-height: 0; max-height: 92vh; inset-block: 0; margin: auto; }
 #account-dlg form { height: auto; }
 #account-dlg .kind { display: flex; flex-direction: column; gap: 10px; }
+
+/* ---------- Phase 2 ---------- */
+#ptr { height: 0; overflow: hidden; display: flex; align-items: center; justify-content: center; color: var(--muted); transition: height .15s; }
+#ptr.ready { color: var(--accent); }
+#ptr.ready .ic { transform: rotate(180deg); transition: transform .2s; }
+.msg { transition: background .12s, transform .15s; }
+.msg.swipe-left { background: color-mix(in srgb, var(--ok) 22%, var(--surface)); }
+.msg.swipe-right { background: color-mix(in srgb, var(--accent) 22%, var(--surface)); }
+.num { width: 90px !important; flex: 0 0 90px !important; min-width: 0 !important; }
+.pill.ok { background: var(--ok); color: #fff; }
+details.adv { margin: 6px 0; }
+details.adv summary { cursor: pointer; color: var(--muted); font-size: .88em; padding: 4px 0; }
+.pair-box { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }
+.qr { background: #fff; padding: 10px; border-radius: 16px; box-shadow: var(--shadow); line-height: 0; }
+.qr svg { width: 240px; height: 240px; }
+.pair-side { flex: 1; min-width: 220px; }
+textarea.code { width: 100%; font-family: ui-monospace, Consolas, monospace; font-size: .8em; color: var(--fg); resize: none; }
+.onboard form { align-items: center; text-align: center; }
+.onboard .ob-logo { width: 64px; height: 64px; border-radius: 18px; background: var(--grad); color: var(--accent-fg); display: flex; align-items: center; justify-content: center; margin: 6px auto 4px; }
+.onboard h3 { margin: 0; }
+.onboard .wide { width: 100%; padding: 11px; }
+body.narrow #compose, body.narrow .sheet { width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh; margin: 0; border-radius: 0; border: none; }
+body.narrow #account-dlg { width: 100vw; max-width: 100vw; }
+body.mobile button, body.mobile .folder, body.mobile .contact-row { min-height: 40px; }
+body.mobile .m-hover, body.mobile .star-btn { display: none !important; }
+body.mobile .msg .star-btn.on { display: inline-flex !important; opacity: 1; }

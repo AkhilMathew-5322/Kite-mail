@@ -140,6 +140,9 @@ pub struct Draft {
     /// Stable Message-ID used while editing a draft.
     #[serde(default)]
     pub message_id: Option<String>,
+    /// Upload large local attachments to Nextcloud and send share links instead.
+    #[serde(default)]
+    pub link_large: bool,
 }
 
 #[derive(Serialize, Debug)]

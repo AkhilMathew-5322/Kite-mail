@@ -64,6 +64,40 @@ pub fn start(app: AppHandle, st: Shared) {
         }).ok();
     }
 
+    // Nextcloud: contacts/tasks sync every 15 minutes, scheduled backups checked hourly.
+    {
+        let app = app.clone();
+        let st = st.clone();
+        std::thread::Builder::new().name("nextcloud".into()).spawn(move || {
+            std::thread::sleep(Duration::from_secs(20));
+            let mut tick: u64 = 0;
+            loop {
+                let cfg = crate::nextcloud::load(&st.db);
+                if cfg.enabled {
+                    {
+                        let _g = st.nc_lock.lock().unwrap_or_else(|p| p.into_inner());
+                        match crate::nextcloud::sync(&st.db) {
+                            Ok(rep) => { let _ = app.emit("nc-synced", &rep); }
+                            Err(e) => { let _ = app.emit("nc-error", e); }
+                        }
+                    }
+                    if tick % 4 == 0 {
+                        for acct in st.db.accounts().unwrap_or_default() {
+                            if crate::nextcloud::backup_due(&crate::nextcloud::load(&st.db), &acct.email) {
+                                match backup_to_nextcloud(&st, &acct, &|_| {}) {
+                                    Ok(dest) => { if setting_bool(&st, "notify_mail", true) { notify(&app, "Backup complete", &format!("{} → Nextcloud/{dest}", acct.email)); } }
+                                    Err(e) => { let _ = app.emit("nc-error", format!("Backup of {} failed: {e}", acct.email)); }
+                                }
+                            }
+                        }
+                    }
+                }
+                tick += 1;
+                std::thread::sleep(Duration::from_secs(15 * 60));
+            }
+        }).ok();
+    }
+
     // Task reminders.
     std::thread::Builder::new().name("reminders".into()).spawn(move || loop {
         if let Ok(due) = st.db.take_due_todos() {
@@ -122,4 +156,16 @@ fn idle_loop(app: AppHandle, st: Shared, account_id: i64, stop: Arc<AtomicBool>)
             backoff = (backoff * 2).min(600);
         }
     }
+}
+
+/// Full mailbox backup written to a temp file, uploaded to Nextcloud, then removed locally.
+pub fn backup_to_nextcloud(st: &Shared, acct: &crate::models::Account, progress: &dyn Fn(crate::models::Progress)) -> Result<String, String> {
+    let name = format!("kitemail-backup-{}-{}.zip", acct.email.replace('@', "_at_"), chrono::Local::now().format("%Y-%m-%d"));
+    let tmp = std::env::temp_dir().join(&name);
+    st.backup(acct, &tmp, progress)?;
+    let res = crate::nextcloud::upload_backup(&st.db, &tmp, &acct.email);
+    let _ = std::fs::remove_file(&tmp);
+    let dest = res?;
+    crate::nextcloud::mark_backup(&st.db, &acct.email)?;
+    Ok(dest)
 }

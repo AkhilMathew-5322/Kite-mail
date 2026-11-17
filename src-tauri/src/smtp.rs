@@ -208,7 +208,7 @@ mod tests {
             account_id: 1, to: "Alice <alice@example.com>".into(), cc: "".into(), bcc: "hidden@example.com".into(),
             subject: "Re: Café".into(), body: "Thanks!\n\n> original line".into(),
             in_reply_to: Some("<orig@x>".into()), references: Some("<r0@x>".into()),
-            attachments: vec![], forward_from: None, reply_to_msg: None, draft: None, local_draft_id: None, message_id: None,
+            attachments: vec![], forward_from: None, reply_to_msg: None, draft: None, local_draft_id: None, message_id: None, link_large: false,
         };
         let m = build(&acct(), &d, vec![("a.pdf".into(), "application/pdf".into(), b"%PDF-1.4".to_vec())]).unwrap();
         let s = String::from_utf8_lossy(&m.formatted()).to_string();
@@ -223,7 +223,7 @@ mod tests {
     #[test]
     fn rejects_no_recipients() {
         let d = Draft { account_id: 1, to: "".into(), cc: "".into(), bcc: "".into(), subject: "x".into(), body: "y".into(),
-            in_reply_to: None, references: None, attachments: vec![], forward_from: None, reply_to_msg: None, draft: None, local_draft_id: None, message_id: None };
+            in_reply_to: None, references: None, attachments: vec![], forward_from: None, reply_to_msg: None, draft: None, local_draft_id: None, message_id: None, link_large: false };
         assert!(build(&acct(), &d, vec![]).is_err());
         let dm = build_draft(&acct(), &Draft { to: "sar".into(), ..d }, vec![]).unwrap();
         let s = String::from_utf8_lossy(&dm.formatted()).to_string();

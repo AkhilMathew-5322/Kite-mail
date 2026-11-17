@@ -1,10 +1,23 @@
 # Kite Mail
 
-Kite Mail is a lightweight email client for **Windows and Linux**, with an Android build in progress. It's built with **Tauri 2 (Rust)** and a UI written in plain HTML and JavaScript with no framework. It uses the system web view instead of bundling Chromium, so the app file is about 11 MB, and CPU use while idle is close to zero.
+Kite Mail is a lightweight email client for **Windows, Linux and Android**. It's built with **Tauri 2 (Rust)** and a UI written in plain HTML and JavaScript with no framework. It uses the system web view instead of bundling Chromium, so the app file is about 11 MB, and CPU use while idle is close to zero.
 
 **Supported accounts:** Microsoft 365 (OAuth), Gmail (OAuth), and any provider that supports IMAP and SMTP.
 
-## What's new in 0.2 (Phase 1)
+## What's new in 0.3 (Phase 2)
+
+| Area | What you get |
+|---|---|
+| **Android app** | Phone layout with a bottom tab bar, folder drawer and full-screen reader and compose. Swipe left on a message to **archive** it and swipe right to mark it **read/unread**. Pull down to refresh, and the phone's Back button works throughout. |
+| **QR pairing** | On the computer, go to Settings → **Pair a phone**. The phone scans the code and gets all accounts (already signed in), contacts, tasks, themes, signatures and the Nextcloud connection. The data is encrypted with AES-256-GCM using a one-time key that exists only in the QR code. It can be downloaded once, within 10 minutes, on your local network. Mail then syncs from your mail servers. |
+| **Nextcloud contacts** | Two-way CardDAV sync. Fields that Kite Mail doesn't manage (extra phone numbers, addresses, birthdays, photos) are preserved. |
+| **Nextcloud tasks** | Two-way CalDAV sync with Nextcloud Tasks. Due dates include an alarm, so your phone reminds you too. Categories and subtasks are preserved. |
+| **Backups to Nextcloud** | Automatic daily or weekly backup of every account to a Nextcloud folder, keeping the last N backups. There's also a "To Nextcloud" button for an immediate backup. |
+| **Large attachments** | Files over a size you choose are uploaded to Nextcloud and sent as a download link (with an optional expiry) instead of bloating the email. |
+| **Other DAV servers** | Radicale, Baïkal, SOGo and others work too. Enter their contacts and tasks URLs under "Other DAV server". |
+| **Fixes** | The message list now scrolls on Windows. Recent mail always appears at the top, even in inboxes with imported or restored mail. |
+
+## What was added in 0.2 (Phase 1)
 
 | Area | What you get |
 |---|---|
@@ -59,7 +72,7 @@ cargo install tauri-cli --version "^2" --locked
 cargo tauri build         # .deb and .AppImage in src-tauri/target/release/bundle/
 ```
 
-### Android (experimental, Phase 2 adds phone-optimised screens and QR pairing)
+### Android
 You need Android Studio (SDK and **NDK**), Java 17, and the Rust Android targets:
 ```bash
 rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
@@ -67,10 +80,29 @@ export NDK_HOME=$ANDROID_HOME/ndk/<version>
 cargo tauri android init
 cargo tauri android build --apk --debug --target aarch64     # installable test APK
 ```
-The interface already switches to a phone layout on narrow screens: a bottom tab bar, a slide-out folder drawer and a full-screen reader.
+**Installing on a phone:** copy the `.apk` to the phone and open it. You'll need to allow "Install unknown apps" for your file manager or browser. Then open Kite Mail → **Scan code from computer**.
 
-### GitHub Actions
-Push this folder to a GitHub repo. `.github/workflows/build.yml` builds the Windows installer, the Linux packages, and a test Android APK, which you can download from the run's **Artifacts**. The Android job is marked experimental, so if it fails the Windows and Linux builds still succeed.
+**Signed release APK (smaller and faster):** create a signing key once, then add it to GitHub under **Settings → Secrets and variables → Actions**:
+```bash
+keytool -genkey -v -keystore kitemail.jks -alias kitemail -keyalg RSA -keysize 2048 -validity 10000
+base64 -w0 kitemail.jks      # copy the output
+```
+| Secret | Value |
+|---|---|
+| `ANDROID_KEYSTORE_B64` | the base64 output |
+| `ANDROID_KEYSTORE_PASSWORD` | the keystore password |
+| `ANDROID_KEY_ALIAS` | `kitemail` |
+
+Keep `kitemail.jks` safe: future updates must be signed with the same key. Without these secrets, the build produces a debug-signed test APK instead.
+
+### GitHub Actions & releases
+Every push to `main` builds the Windows installer, the Linux packages and the Android APK. You can download them from the run's **Artifacts** for 90 days, and only signed-in users can do so.
+
+**Permanent download links:** tag a version and GitHub creates a **Release** with every installer attached:
+```bash
+git tag v0.3.0 && git push origin v0.3.0
+```
+You can also use **Releases → Draft a new release → Choose a tag → `v0.3.0`**.
 
 ---
 
@@ -119,14 +151,26 @@ If a sign-in expires, an ⚠ and a **Reconnect** button appear next to the accou
 - Animations run only while something is loading. Nothing redraws in the background.
 - The release binary is about 11 MB, with LTO and size optimisation. Most of the memory use is the system web view.
 
-## Phase 2 roadmap
-- **Android app**: phone-tuned screens, and **QR pairing** that copies accounts, contacts, tasks, themes and settings to the phone (encrypted). Mail then syncs from the server.
-- **Nextcloud**: two-way sync of contacts (CardDAV) and tasks (CalDAV), scheduled backups to a Nextcloud folder, and large attachments sent as share links.
+## 5. Nextcloud setup
+1. In Nextcloud, go to **Settings → Security → Devices & sessions → Create new app password**, name it "Kite Mail", and copy the password.
+2. In Kite Mail, go to **Settings → Nextcloud** and enter your server address (for example `https://cloud.yourcompany.com`), username and app password, then click **Connect**. The first sync starts immediately.
+3. Optional: choose a task list, set the backup schedule and folder, and set the size limit for large attachments.
+
+Contacts and tasks sync automatically every 15 minutes and a few seconds after each change. Use **Sync now** for an immediate sync.
+If you edit the same contact on two devices at once, the server's version wins. Deletions sync in both directions.
+
+## 6. Pairing a phone
+1. Install the APK on the phone and open Kite Mail.
+2. On the computer, go to **Settings → Pair a phone → Show pairing QR code**.
+3. On the phone, tap **Scan code from computer**. Both devices must be on the **same Wi-Fi**.
+4. Done. Your accounts work without signing in again, and mail downloads from the servers.
+
+Can't scan? Choose "Can't scan? Show code" on the computer and paste the code into the phone (Settings → Copy setup from your computer).
 
 ## Project layout
 ```
 ui/index.html, style.css
-ui/js/  icons · themes · core · mail · compose · contacts · tasks · settings · main
+ui/js/  icons · themes · core · mail · compose · contacts · tasks · settings · sync · main
 src-tauri/src/
   lib.rs        app setup, commands, Linux spell-check, mobile entry point
   commands.rs   Tauri commands used by the UI
@@ -136,6 +180,9 @@ src-tauri/src/
   smtp.rs       message building & sending (lettre)
   mime.rs       parsing, previews, HTML→text, inline images, draft re-open
   grammar.rs    LanguageTool client
+  dav.rs        WebDAV/CardDAV/CalDAV client, vCard + VTODO mapping that keeps unknown fields
+  nextcloud.rs  contacts/tasks two-way sync, backups with retention, share links
+  pair.rs       encrypted one-time phone pairing (AES-256-GCM, QR, LAN transfer)
   db.rs         SQLite cache, contacts, tasks, settings, local drafts
   secrets.rs    OS keyring with fallback
   it_tests.rs   end-to-end tests against real IMAP/SMTP servers
@@ -144,7 +191,9 @@ src-tauri/src/
 ## Tests
 ```bash
 cd src-tauri
-cargo test                       # 14 unit tests
-LM_IT=1 cargo test it_tests      # 2 end-to-end tests: needs IMAPS on localhost:993 + SMTPS on :4650
-                                 # users tester@localhost and tester2@localhost / secret123
+cargo test                       # 20 unit tests (incl. a full pairing over the network)
+LM_IT=1 cargo test it_tests      # 3 end-to-end tests against real servers:
+                                 #   IMAPS localhost:993 + SMTPS :4650 (Dovecot + aiosmtpd),
+                                 #   users tester@, tester2@, tester3@localhost / secret123
+                                 #   DAV on :8090 – Radicale (CardDAV/CalDAV) + WsgiDAV (files) + share-API mock
 ```

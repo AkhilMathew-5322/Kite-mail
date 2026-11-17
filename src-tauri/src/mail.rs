@@ -28,6 +28,8 @@ impl Conn {
 
 pub struct AppState {
     pub db: Db,
+    /// Serialises Nextcloud syncs (background timer vs. "Sync now").
+    pub nc_lock: Mutex<()>,
     sessions: Mutex<HashMap<i64, Arc<Mutex<Option<Conn>>>>>,
     tokens: Mutex<HashMap<i64, (String, Instant)>>,
 }
@@ -43,7 +45,7 @@ const HEADER_QUERY: &str = "(UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER
 
 impl AppState {
     pub fn new(db: Db) -> Self {
-        AppState { db, sessions: Mutex::new(HashMap::new()), tokens: Mutex::new(HashMap::new()) }
+        AppState { db, nc_lock: Mutex::new(()), sessions: Mutex::new(HashMap::new()), tokens: Mutex::new(HashMap::new()) }
     }
 
     // ------------------------------------------------------------------ auth
@@ -337,6 +339,14 @@ impl AppState {
     // ------------------------------------------------------------------ sending
 
     pub fn send(&self, acct: &Account, draft: &Draft) -> Result<(), String> {
+        let mut linked;
+        let draft = if draft.link_large && !draft.attachments.is_empty() {
+            linked = clone_draft(draft);
+            crate::nextcloud::linkify_attachments(&self.db, &mut linked.body, &mut linked.attachments)?;
+            &linked
+        } else {
+            draft
+        };
         let mut extra = Vec::new();
         if let Some(fwd) = &draft.forward_from {
             let raw = self.raw_message(acct, &fwd.folder, fwd.uid)?;
@@ -625,7 +635,7 @@ fn clone_draft(d: &Draft) -> Draft {
         account_id: d.account_id, to: d.to.clone(), cc: d.cc.clone(), bcc: d.bcc.clone(), subject: d.subject.clone(),
         body: d.body.clone(), in_reply_to: d.in_reply_to.clone(), references: d.references.clone(),
         attachments: d.attachments.clone(), forward_from: d.forward_from.clone(), reply_to_msg: d.reply_to_msg.clone(),
-        draft: d.draft.clone(), local_draft_id: d.local_draft_id, message_id: d.message_id.clone(),
+        draft: d.draft.clone(), local_draft_id: d.local_draft_id, message_id: d.message_id.clone(), link_large: d.link_large,
     }
 }
 

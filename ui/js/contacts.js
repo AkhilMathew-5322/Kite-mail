@@ -61,12 +61,13 @@ function renderContactDetail() {
       await loadContacts();
       renderContactList(); renderContactDetail();
       toast('Contact saved', 'ok');
+      queueNcSync();
       if (S.view) showReader(S.view);
     } catch (e) { toast(errText(e), 'error'); }
   };
   $('#cc-fav').onclick = async () => {
     c.favorite = !c.favorite;
-    if (c.id) { await invoke('save_contact', { contact: read() }).catch(() => {}); await loadContacts(); renderContactList(); }
+    if (c.id) { await invoke('save_contact', { contact: read() }).catch(() => {}); await loadContacts(); renderContactList(); queueNcSync(); }
     renderContactDetail();
   };
   $('#cc-mail').onclick = () => openCompose({ to: fmtAddr($('#cc-name').value.trim(), $('#cc-email').value.trim()) });
@@ -75,6 +76,7 @@ function renderContactDetail() {
   if (del) del.onclick = async () => {
     if (!(await confirmBox(`Delete ${c.name || c.email}?`, 'Delete', true))) return;
     await invoke('delete_contact', { id: c.id });
+    queueNcSync();
     contactSel = null;
     await loadContacts();
     renderContactList(); renderContactDetail();

@@ -77,6 +77,7 @@ function openCompose(opts = {}) {
   $('#c-grammar').hidden = true;
   renderComposeFiles();
   $('#compose').showModal();
+  if (S.mobile || $('#app').classList.contains('narrow')) pushLayer('compose', () => { if (S.compose) closeCompose(); });
   const ta = $('#c-body');
   if (to) { ta.focus(); ta.setSelectionRange(0, 0); ta.scrollTop = 0; } else $('#c-to').focus();
 }
@@ -170,6 +171,7 @@ async function closeCompose() {
   clearTimeout(c?.timer);
   S.compose = null;
   $('#compose').close();
+  dropLayer('compose');
   if (S.cur && folderOf(S.cur.accountId, S.cur.folder)?.special === 'drafts') syncCurrent(true);
 }
 
@@ -194,12 +196,25 @@ async function sendCompose() {
   const draft = composePayload();
   if (!draft.to.trim() && !draft.cc.trim() && !draft.bcc.trim()) { toast('Add at least one recipient', 'error'); $('#c-to').focus(); return; }
   if (!draft.subject.trim() && !(await confirmBox('Send without a subject?', 'Send'))) return;
+  if (S.nc.enabled && draft.attachments.length) {
+    const sizes = await invoke('file_sizes', { paths: draft.attachments }).catch(() => []);
+    const limit = (S.nc.link_threshold_mb || 10) * 1048576;
+    const big = sizes.filter((n) => n >= limit);
+    if (big.length) {
+      const mb = (big.reduce((a, b) => a + b, 0) / 1048576).toFixed(1);
+      const choice = await choiceBox(`${big.length} attachment${big.length > 1 ? 's are' : ' is'} large (${mb} MB). Many mail servers reject big emails.\nUpload ${big.length > 1 ? 'them' : 'it'} to Nextcloud and send a download link instead?`,
+        [{ value: 'cancel', label: 'Cancel' }, { value: 'attach', label: 'Attach anyway' }, { value: 'link', label: 'Send as link', cls: 'primary' }], 'Large attachments');
+      if (choice === 'cancel' || choice === null) return;
+      draft.link_large = choice === 'link';
+    }
+  }
   btn.disabled = true;
   clearTimeout(S.compose.timer);
   try {
-    await withBusy('Sending…', () => invoke('send_message', { draft }));
+    await withBusy(draft.link_large ? 'Uploading to Nextcloud & sending…' : 'Sending…', () => invoke('send_message', { draft }));
     $('#compose').close();
     S.compose = null;
+    dropLayer('compose');
     toast('Message sent', 'ok');
     if (draft.reply_to_msg) {
       const m = S.messages.find((x) => x.account_id === draft.account_id && x.folder === draft.reply_to_msg.folder && x.uid === draft.reply_to_msg.uid);

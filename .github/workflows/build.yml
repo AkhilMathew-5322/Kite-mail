@@ -1,5 +1,8 @@
 name: Build Kite Mail
 
+permissions:
+  contents: write   # needed to publish GitHub Releases on version tags
+
 on:
   push:
     branches: [main]
@@ -88,10 +91,48 @@ jobs:
         run: cargo install tauri-cli --version "^2" --locked
       - name: Generate Android project
         run: cargo tauri android init --ci
-      - name: Build APK (debug-signed, installable for testing)
-        run: cargo tauri android build --apk --debug --target aarch64
+      # Signed, optimised release APK when a signing key is configured (see README),
+      # otherwise a debug-signed APK that installs fine for testing.
+      - name: Build APK
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          mkdir -p dist
+          if [ -n "$KS_B64" ]; then
+            cargo tauri android build --apk --target aarch64
+            UNSIGNED=$(find src-tauri/gen/android/app/build/outputs/apk -name '*release-unsigned.apk' | head -1)
+            echo "$KS_B64" | base64 -d > ks.jks
+            BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+            "$BT/zipalign" -f -p 4 "$UNSIGNED" aligned.apk
+            "$BT/apksigner" sign --ks ks.jks --ks-pass env:KS_PASS --ks-key-alias "$KS_ALIAS" --out "dist/KiteMail-${GITHUB_REF_NAME}-android-arm64.apk" aligned.apk
+            rm -f ks.jks
+          else
+            cargo tauri android build --apk --debug --target aarch64
+            cp "$(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk' | head -1)" "dist/KiteMail-${GITHUB_REF_NAME}-android-arm64-debug.apk"
+          fi
+          ls -la dist
       - uses: actions/upload-artifact@v4
         with:
           name: kitemail-android
-          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
-          if-no-files-found: ignore
+          path: dist/*.apk
+
+  # Push a tag like v0.3.0 -> a GitHub Release with every installer attached (permanent links).
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [desktop, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Collect files
+        run: |
+          mkdir release
+          find artifacts -type f \( -name '*.exe' -o -name '*.msi' -o -name '*.deb' -o -name '*.AppImage' -o -name '*.apk' \) -exec cp {} release/ \;
+          ls -la release
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true

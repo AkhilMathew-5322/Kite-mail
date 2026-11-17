@@ -74,10 +74,24 @@ listen('todos-updated', async () => {
   if (S.tab === 'tasks') renderTasks();
 });
 listen('backup-progress', ({ payload }) => onBackupProgress(payload));
+listen('nc-synced', async ({ payload }) => {
+  await loadNc();
+  const changed = payload.contacts_down + payload.tasks_down + payload.deleted;
+  if (!changed) return;
+  await loadContacts(); await loadTodos();
+  if (S.tab === 'contacts') { S.contactsView = S.contacts; renderContactList(); renderContactDetail(); }
+  if (S.tab === 'tasks') renderTasks();
+});
+listen('nc-error', async () => { await loadNc(); if (S.tab === 'settings') renderSettings(); });
+listen('pair-done', ({ payload }) => {
+  const el = $('#pair-status');
+  if (el) el.innerHTML = payload ? `${icon('check', 14)} Phone paired – setup copied.` : `${icon('junk', 14)} Code expired – show a new one.`;
+  if (payload) toast('Phone paired successfully', 'ok');
+});
 
 // ------------------------------------------------------------------ responsive layout
 const narrowQuery = window.matchMedia('(max-width: 760px)');
-const applyNarrow = () => $('#app').classList.toggle('narrow', narrowQuery.matches);
+const applyNarrow = () => { $('#app').classList.toggle('narrow', narrowQuery.matches); document.body.classList.toggle('narrow', narrowQuery.matches); };
 narrowQuery.addEventListener('change', applyNarrow);
 applyNarrow();
 
@@ -86,6 +100,9 @@ async function init() {
   hydrateIcons();
   try { Object.assign(S.settings, DEFAULT_SETTINGS, await invoke('get_settings')); } catch (_) { /* defaults */ }
   applyTheme();
+  try { const info = await invoke('app_info'); S.mobile = !!info.mobile; S.version = info.version; } catch (_) { /* desktop */ }
+  document.body.classList.toggle('mobile', S.mobile);
+  await loadNc();
   try {
     S.accounts = await invoke('list_accounts');
     for (const a of S.accounts) S.folders[a.id] = await invoke('list_folders', { accountId: a.id });
@@ -93,7 +110,7 @@ async function init() {
   renderSidebar();
   loadContacts();
   loadTodos();
-  if (!S.accounts.length) { renderList(); openAccountDialog(); return; }
+  if (!S.accounts.length) { renderList(); if (S.mobile) mobileOnboarding(); else openAccountDialog(); return; }
   await openFirstInbox();
   for (const a of S.accounts) if (a.id !== S.cur?.accountId) refreshAccount(a.id);
   recoverDrafts();
