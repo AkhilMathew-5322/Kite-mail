@@ -160,7 +160,7 @@ fn end_to_end_imap_smtp() {
     }).unwrap();
 
     let mut sent_files: Vec<_> = std::fs::read_dir(out_dir).unwrap().map(|e| e.unwrap().path()).filter(|p| mine(p)).collect();
-    sent_files.sort_by_key(|p| p.file_stem().and_then(|s| s.to_str()).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0));
+    sent_files.sort_by_key(|p| p.file_stem().and_then(|s| s.to_str()).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0));
     assert_eq!(sent_files.len(), 2);
     let reply = std::fs::read_to_string(&sent_files[0]).unwrap();
     assert!(reply.contains("X-Envelope-To: j@example.com,secret@example.com"), "{reply}");
