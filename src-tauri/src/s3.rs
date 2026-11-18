@@ -155,7 +155,7 @@ impl Client {
             region,
             access: cfg.access_key.trim().to_string(),
             secret: secret.to_string(),
-            agent: ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(15)).timeout_read(Duration::from_secs(120)).build(),
+            agent: crate::net::agent().timeout_connect(Duration::from_secs(15)).timeout_read(Duration::from_secs(120)).build(),
         })
     }
 

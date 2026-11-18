@@ -448,9 +448,10 @@ function showReader(view) {
   atts.innerHTML = '';
   for (const a of view.attachments.filter((x) => !x.inline)) {
     const chip = document.createElement('div');
-    chip.className = 'att';
+    const risky = RISKY_EXT.test(a.name.trim().replace(/[. ]+$/, ''));
+    chip.className = 'att' + (risky ? ' risky' : '');
     const ext = (a.name.split('.').pop() || '').slice(0, 4).toUpperCase();
-    chip.innerHTML = `<span class="att-ext">${esc(ext)}</span><span class="att-name" title="Open ${esc(a.name)}">${esc(a.name)}<small>${fmtSize(a.size)}</small></span>
+    chip.innerHTML = `<span class="att-ext">${risky ? icon('shield', 14) : esc(ext)}</span><span class="att-name" title="${risky ? 'Program or macro file – it can only be saved, not opened from here' : 'Open ' + esc(a.name)}">${esc(a.name)}<small>${risky ? 'Can run code · ' : ''}${fmtSize(a.size)}</small></span>
       <button class="icon" title="Save as…">${icon('download', 16)}</button>`;
     const args = { accountId: s.account_id, folder: s.folder, uid: s.uid, index: a.index };
     $('.att-name', chip).onclick = () => invoke('open_attachment', args).catch((e) => toast(errText(e), 'error'));
@@ -520,6 +521,9 @@ function renderBody() {
   };
   frame.srcdoc = doc;
 }
+
+/** Mirrors is_dangerous_file() in commands.rs (the backend refuses to open these). */
+const RISKY_EXT = /\.(exe|com|scr|pif|bat|cmd|msi|msp|mst|msix|msixbundle|appx|appxbundle|appinstaller|vbs|vbe|js|jse|wsf|wsh|wsc|hta|ps1|psm1|psd1|ps1xml|lnk|url|scf|inf|reg|cpl|msc|jar|jnlp|dll|ocx|sys|chm|hlp|gadget|application|iso|img|vhd|vhdx|docm|dotm|xlsm|xltm|xlam|pptm|potm|ppam|ppsm|sldm|one|xll|library-ms|searchconnector-ms|settingcontent-ms|sh|bash|run|bin|desktop|appimage|deb|rpm|command|app|pkg|dmg|apk|xapk)$/i;
 
 // ------------------------------------------------------------------ scam detection
 const hostOf = (u) => { try { return new URL(u).hostname.toLowerCase().replace(/^www\./, ''); } catch (_) { return ''; } };

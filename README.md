@@ -4,6 +4,12 @@ Kite Mail is a lightweight email client for **Windows, Linux and Android**. It's
 
 **Supported accounts:** Microsoft 365 (OAuth), Gmail (OAuth), and any provider that supports IMAP and SMTP.
 
+## What's new in 0.4.1 (smaller Android app, safer attachments)
+- **Android APK ~20 MB instead of 224 MB:** CI now always builds the optimised release version, and the app uses one TLS stack (the platform's, same as for IMAP/SMTP) instead of also bundling rustls + ring.
+- **Dangerous attachments can't be opened directly:** programs, scripts, shortcuts, disk images and macro documents (.exe, .js, .lnk, .iso, .docm…) are marked in red and can only be saved – the same protection Thunderbird has.
+- Copies of opened attachments are removed from the temp folder after a day.
+- Signature and sound-file pickers only accept the expected file types.
+
 ## What's new in 0.4 (Thunderbird-style settings, S3, solid themes)
 - **S3 object storage** (Settings → Cloud & Backup): Amazon S3, Oracle Cloud Object Storage, Cloudflare R2, Wasabi, MinIO and other S3-compatible storage. Daily/weekly mailbox backups with "keep the latest N", one-click backup per account, and large attachments sent as private download links that expire (1–7 days). Keys are stored in the system keychain; requests are signed with AWS Signature V4.
 - **Account settings like Thunderbird** (Settings → Accounts → Settings): account name and colour, default account, your name, reply-to, organization, HTML signatures (or a signature file), attach your vCard, **other identities / aliases** to send from, server settings (test & save), save sent copies, Bcc yourself, reply above/below the quote, read-receipt requests, how many days of mail to keep in sync and offline copies.
@@ -126,9 +132,9 @@ Every push to `main` builds the Windows installer, the Linux packages and the An
 
 **Permanent download links:** tag a version and GitHub creates a **Release** with every installer attached:
 ```bash
-git tag v0.4.0 && git push origin v0.4.0
+git tag v0.4.1 && git push origin v0.4.1
 ```
-You can also use **Releases → Draft a new release → Choose a tag → `v0.4.0`**.
+You can also use **Releases → Draft a new release → Choose a tag → `v0.4.1`**.
 
 ---
 
@@ -219,7 +225,7 @@ src-tauri/src/
 ## Tests
 ```bash
 cd src-tauri
-cargo test                       # 28 unit tests (incl. pairing over the network and AWS SigV4 test vectors)
+cargo test                       # 29 unit tests (incl. pairing over the network and AWS SigV4 test vectors)
 cargo audit                      # dependency security check (policy: .cargo/audit.toml)
 LM_IT=1 cargo test it_tests      # 3 end-to-end tests against real servers:
                                  #   IMAPS localhost:993 + SMTPS :4650 (Dovecot + aiosmtpd),

@@ -1,6 +1,6 @@
 [package]
 name = "kitemail"
-version = "0.4.0"
+version = "0.4.1"
 description = "Lightweight desktop email client (IMAP/SMTP, Microsoft 365 & Gmail OAuth)"
 edition = "2021"
 
@@ -32,7 +32,7 @@ rusqlite = { version = "0.43", features = ["bundled"] }
 keyring = { version = "3", features = ["windows-native", "sync-secret-service", "vendored"] }
 
 # OAuth helpers
-ureq = { version = "2", features = ["json"] }
+ureq = { version = "2", default-features = false, features = ["json", "gzip", "native-tls"] }  # platform TLS, see net.rs
 sha2 = "0.10"
 base64 = "0.22"
 rand = "0.8"

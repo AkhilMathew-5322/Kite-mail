@@ -8,6 +8,7 @@ mod grammar;
 mod it_tests;
 mod mail;
 mod mime;
+mod net;
 mod models;
 mod nextcloud;
 mod oauth;
@@ -30,6 +31,7 @@ pub fn run() {
     let builder = builder.plugin(tauri_plugin_barcode_scanner::init());
     builder
         .setup(|app| {
+            std::thread::spawn(commands::clean_temp_attachments);
             let dir = if cfg!(mobile) {
                 app.path().app_data_dir().unwrap_or_else(|_| db::data_dir())
             } else {

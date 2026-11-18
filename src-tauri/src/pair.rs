@@ -326,7 +326,7 @@ pub fn import_from_code(db: &Db, code: &str) -> Result<ImportReport, String> {
     };
     let key = URL_SAFE_NO_PAD.decode(key).map_err(|_| "The pairing code is damaged".to_string())?;
     // The computer lists every address it might be reachable on; use the first that answers.
-    let agent = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(4)).timeout(Duration::from_secs(30)).build();
+    let agent = crate::net::agent().timeout_connect(Duration::from_secs(4)).timeout(Duration::from_secs(30)).build();
     let mut last_err = String::new();
     let mut resp = None;
     for h in host.split(',').map(str::trim).filter(|h| !h.is_empty()).take(6) {

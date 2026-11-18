@@ -522,3 +522,6 @@ kbd { font: .85em ui-monospace, monospace; border: 1px solid var(--line); border
 .receipt-bar .grow { flex: 1; }
 .set-row input[type=color] { flex: 0 0 56px !important; min-width: 0 !important; width: 56px; height: 34px; padding: 2px; border-radius: 8px; cursor: pointer; }
 .set-body { overflow-x: hidden; } .set-row > * { min-width: 0; }
+.att.risky { border-color: color-mix(in srgb, var(--danger) 55%, transparent); }
+.att.risky .att-ext { background: var(--danger); color: #fff; }
+.att.risky small { color: var(--danger); }

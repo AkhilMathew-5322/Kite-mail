@@ -206,7 +206,7 @@ pub fn refresh(p: &Provider, refresh_token: &str) -> Result<TokenResponse, Strin
 }
 
 fn post_token(url: &str, form: &[(&str, &str)]) -> Result<TokenResponse, String> {
-    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(30)).build();
+    let agent = crate::net::agent().timeout(Duration::from_secs(30)).build();
     match agent.post(url).send_form(form) {
         Ok(resp) => resp.into_json::<TokenResponse>().map_err(|e| format!("Bad token response: {e}")),
         Err(ureq::Error::Status(code, resp)) => {

@@ -311,6 +311,32 @@ pub async fn pick_files(app: AppHandle) -> Result<Vec<String>, String> {
     .await
 }
 
+/// File types that run code (or can, via macros / shortcuts) when opened with the system handler.
+pub fn is_dangerous_file(name: &str) -> bool {
+    const BAD: &[&str] = &[
+        "exe", "com", "scr", "pif", "bat", "cmd", "msi", "msp", "mst", "msix", "msixbundle", "appx", "appxbundle", "appinstaller",
+        "vbs", "vbe", "js", "jse", "wsf", "wsh", "wsc", "hta", "ps1", "psm1", "psd1", "ps1xml", "lnk", "url", "scf", "inf", "reg",
+        "cpl", "msc", "jar", "jnlp", "dll", "ocx", "sys", "chm", "hlp", "gadget", "application", "iso", "img", "vhd", "vhdx",
+        "docm", "dotm", "xlsm", "xltm", "xlam", "pptm", "potm", "ppam", "ppsm", "sldm", "one", "xll", "library-ms", "searchconnector-ms",
+        "settingcontent-ms", "sh", "bash", "run", "bin", "desktop", "appimage", "deb", "rpm", "command", "app", "pkg", "dmg", "apk", "xapk",
+    ];
+    let lower = name.trim().trim_end_matches(['.', ' ']).to_ascii_lowercase();
+    lower.rsplit_once('.').is_some_and(|(_, ext)| BAD.contains(&ext))
+}
+
+/// Removes attachment copies opened more than a day ago (they may hold private documents).
+pub fn clean_temp_attachments() {
+    let root = std::env::temp_dir().join("kitemail");
+    let Ok(entries) = std::fs::read_dir(&root) else { return };
+    let day = std::time::Duration::from_secs(86_400);
+    for e in entries.flatten() {
+        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > day);
+        if old {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
 pub fn safe_file_name(name: &str) -> String {
     let cleaned: String = name.chars().map(|c| if "\\/:*?\"<>|".contains(c) || c.is_control() { '_' } else { c }).collect();
     let cleaned = cleaned.trim().trim_matches('.').trim().to_string();
@@ -333,6 +359,17 @@ pub fn safe_file_name(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::is_dangerous_file;
+    #[test]
+    fn dangerous_attachments_are_blocked() {
+        for n in ["invoice.pdf.exe", "Scan.PDF.LNK", "report.docm", "setup.msi ", "a.js", "x.hta.", "photo.iso", "run.ps1"] {
+            assert!(is_dangerous_file(n), "{n}");
+        }
+        for n in ["invoice.pdf", "photo.jpg", "notes.txt", "contract.docx", "data.xlsx", "exe", "archive.zip", "page.html"] {
+            assert!(!is_dangerous_file(n), "{n}");
+        }
+    }
+
     #[test]
     fn safe_names() {
         use super::safe_file_name as s;
@@ -372,6 +409,9 @@ pub async fn open_attachment(app: AppHandle, state: State<'_, Shared>, account_i
         let acct = st.db.account(account_id)?;
         let raw = st.raw_message(&acct, &folder, uid)?;
         let (name, _, bytes) = mime::attachment(&raw, index)?;
+        if is_dangerous_file(&name) {
+            return Err(format!("For your safety, \"{name}\" can't be opened from an email – files like this can run programs on your computer. If you trust the sender, use Save and scan the file first."));
+        }
         let dir = std::env::temp_dir().join("kitemail").join(format!("{account_id}-{uid}"));
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join(safe_file_name(&name));
@@ -828,6 +868,9 @@ pub async fn receipt_done(state: State<'_, Shared>, message_id: String) -> Resul
 /// Reads a signature file (.txt / .html, max 256 KB).
 #[tauri::command]
 pub async fn read_signature_file(path: String) -> Result<String, String> {
+    if !["txt", "html", "htm"].contains(&path.rsplit('.').next().unwrap_or("").to_ascii_lowercase().as_str()) {
+        return Err("Choose a .txt or .html signature file".into());
+    }
     let meta = std::fs::metadata(&path).map_err(|e| crate::mail::friendly_io(&e, "signature file"))?;
     if meta.len() > 256 * 1024 {
         return Err("The signature file is larger than 256 KB".into());
@@ -855,13 +898,17 @@ pub async fn pick_one_file(app: AppHandle, title: String, extensions: Vec<String
 #[tauri::command]
 pub async fn file_data_url(path: String) -> Result<String, String> {
     use base64::Engine;
+    if !["mp3", "ogg", "oga", "wav", "m4a", "flac"].contains(&path.rsplit('.').next().unwrap_or("").to_ascii_lowercase().as_str()) {
+        return Err("Choose an .mp3, .ogg, .wav, .m4a or .flac sound file".into());
+    }
     let meta = std::fs::metadata(&path).map_err(|e| crate::mail::friendly_io(&e, "sound file"))?;
     if meta.len() > 2 * 1024 * 1024 {
         return Err("The sound file is larger than 2 MB".into());
     }
     let bytes = std::fs::read(&path).map_err(|e| crate::mail::friendly_io(&e, "sound file"))?;
     let mime = match path.rsplit('.').next().unwrap_or("").to_ascii_lowercase().as_str() {
-        "mp3" => "audio/mpeg", "ogg" | "oga" => "audio/ogg", "wav" => "audio/wav", "m4a" => "audio/mp4", "flac" => "audio/flac", _ => "application/octet-stream",
+        "mp3" => "audio/mpeg", "ogg" | "oga" => "audio/ogg", "wav" => "audio/wav", "m4a" => "audio/mp4", "flac" => "audio/flac",
+        _ => return Err("Choose an .mp3, .ogg, .wav, .m4a or .flac sound file".into()),
     };
     Ok(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
 }

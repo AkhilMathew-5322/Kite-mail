@@ -9,7 +9,7 @@ pub fn check(base_url: &str, language: &str, text: &str) -> Result<Vec<GrammarIs
     }
     let url = format!("{}/v2/check", base_url.trim_end_matches('/'));
     let lang = if language.trim().is_empty() { "auto" } else { language.trim() };
-    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(25)).build();
+    let agent = crate::net::agent().timeout(Duration::from_secs(25)).build();
     let resp = agent
         .post(&url)
         .send_form(&[("text", text), ("language", lang), ("level", "default")])

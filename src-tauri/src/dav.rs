@@ -47,7 +47,7 @@ impl Dav {
     pub fn new(user: &str, password: &str) -> Dav {
         Dav {
             auth: format!("Basic {}", STANDARD.encode(format!("{user}:{password}"))),
-            agent: ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(20)).timeout(Duration::from_secs(300)).build(),
+            agent: crate::net::agent().timeout_connect(Duration::from_secs(20)).timeout(Duration::from_secs(300)).build(),
         }
     }
 
