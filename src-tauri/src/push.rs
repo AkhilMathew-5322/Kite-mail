@@ -77,6 +77,16 @@ pub fn start(app: AppHandle, st: Shared) {
             std::thread::sleep(Duration::from_secs(20));
             let mut tick: u64 = 0;
             loop {
+                if tick.is_multiple_of(4) {
+                    for acct in st.db.accounts().unwrap_or_default() {
+                        if crate::s3::backup_due(&crate::s3::load(&st.db), &acct.email) {
+                            match backup_to_s3(&st, &acct, &|_| {}) {
+                                Ok(dest) => { if setting_bool(&st, "notify_mail", true) { notify(&app, "Backup complete", &format!("{} → {dest}", acct.email)); } }
+                                Err(e) => { let _ = app.emit("s3-error", format!("Backup of {} failed: {e}", acct.email)); }
+                            }
+                        }
+                    }
+                }
                 let cfg = crate::nextcloud::load(&st.db);
                 if cfg.enabled {
                     {
@@ -132,17 +142,9 @@ fn idle_loop(app: AppHandle, st: Shared, account_id: i64, stop: Arc<AtomicBool>)
                 backoff = 15;
                 let _ = app.emit("mail-updated", json!({ "account_id": account_id, "folder": folder }));
                 if !new.is_empty() && setting_bool(&st, "notify_mail", true) {
-                    if new.len() == 1 {
-                        let m = &new[0];
-                        let from = if m.from_name.is_empty() { &m.from_addr } else { &m.from_name };
-                        notify(&app, from, &m.subject);
-                    } else {
-                        let lines: Vec<String> = new.iter().take(3).map(|m| {
-                            let from = if m.from_name.is_empty() { &m.from_addr } else { &m.from_name };
-                            format!("{from}: {}", m.subject)
-                        }).collect();
-                        notify(&app, &format!("{} new messages · {}", new.len(), acct.email), &lines.join("\n"));
-                    }
+                    let _ = app.emit("new-mail", json!({ "account_id": account_id, "count": new.len() }));
+                    let (title, body) = notification_text(&setting_str(&st, "notify_preview", "full"), &acct.email, &new);
+                    notify(&app, &title, &body);
                 }
             }
             Err(e) => {
@@ -164,6 +166,23 @@ fn idle_loop(app: AppHandle, st: Shared, account_id: i64, stop: Arc<AtomicBool>)
     }
 }
 
+/// Notification wording for `preview` = "full" (sender + subject), "sender" or "none".
+pub fn notification_text(preview: &str, account: &str, new: &[crate::models::MsgSummary]) -> (String, String) {
+    let who = |m: &crate::models::MsgSummary| if m.from_name.is_empty() { m.from_addr.clone() } else { m.from_name.clone() };
+    match (preview, new.len()) {
+        ("none", 1) => ("New mail".into(), account.to_string()),
+        ("none", n) => (format!("{n} new messages"), account.to_string()),
+        ("sender", 1) => (who(&new[0]), format!("New message · {account}")),
+        ("sender", n) => {
+            let mut names: Vec<String> = Vec::new();
+            for m in new { let w = who(m); if !names.contains(&w) { names.push(w); } }
+            (format!("{n} new messages · {account}"), names.into_iter().take(4).collect::<Vec<_>>().join(", "))
+        }
+        (_, 1) => (who(&new[0]), new[0].subject.clone()),
+        (_, n) => (format!("{n} new messages · {account}"), new.iter().take(3).map(|m| format!("{}: {}", who(m), m.subject)).collect::<Vec<_>>().join("\n")),
+    }
+}
+
 const IDLE_WAIT: Duration = Duration::from_secs(5 * 60);
 const MAX_BACKOFF: u64 = 120;
 
@@ -178,6 +197,16 @@ fn nap(secs: u64, stop: &AtomicBool) {
 }
 
 /// Full mailbox backup written to a temp file, uploaded to Nextcloud, then removed locally.
+/// Backs up an account to the S3 bucket (records success or the error in the S3 settings).
+pub fn backup_to_s3(st: &Shared, acct: &crate::models::Account, progress: &dyn Fn(crate::models::Progress)) -> Result<String, String> {
+    let name = format!("kitemail-backup-{}-{}.zip", acct.email.replace('@', "_at_"), chrono::Local::now().format("%Y-%m-%d-%H%M"));
+    let tmp = std::env::temp_dir().join(&name);
+    let res = st.backup(acct, &tmp, progress).and_then(|_| crate::s3::upload_backup(&st.db, &tmp, &acct.email));
+    let _ = std::fs::remove_file(&tmp);
+    crate::s3::mark_backup(&st.db, &acct.email, res.as_ref().err().map(|e| e.as_str()))?;
+    res
+}
+
 pub fn backup_to_nextcloud(st: &Shared, acct: &crate::models::Account, progress: &dyn Fn(crate::models::Progress)) -> Result<String, String> {
     let name = format!("kitemail-backup-{}-{}.zip", acct.email.replace('@', "_at_"), chrono::Local::now().format("%Y-%m-%d"));
     let tmp = std::env::temp_dir().join(&name);
@@ -187,4 +216,26 @@ pub fn backup_to_nextcloud(st: &Shared, acct: &crate::models::Account, progress:
     let dest = res?;
     crate::nextcloud::mark_backup(&st.db, &acct.email)?;
     Ok(dest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::notification_text;
+    use crate::models::MsgSummary;
+
+    fn m(name: &str, subj: &str) -> MsgSummary {
+        MsgSummary { account_id: 1, folder: "INBOX".into(), uid: 1, subject: subj.into(), from_name: name.into(), from_addr: "x@y".into(),
+            to: String::new(), date: 0, size: 0, seen: false, flagged: false, answered: false, has_attach: false, preview: String::new() }
+    }
+
+    #[test]
+    fn notification_privacy_levels() {
+        let one = [m("Sara", "Salary review")];
+        assert_eq!(notification_text("full", "me@x", &one), ("Sara".into(), "Salary review".into()));
+        assert!(!notification_text("sender", "me@x", &one).1.contains("Salary"));
+        let none = notification_text("none", "me@x", &one);
+        assert!(!none.0.contains("Sara") && !none.1.contains("Salary"));
+        let two = [m("Sara", "A"), m("Sara", "B")];
+        assert_eq!(notification_text("sender", "me@x", &two).1, "Sara");
+    }
 }

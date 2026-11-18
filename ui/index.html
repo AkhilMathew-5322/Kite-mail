@@ -65,6 +65,7 @@
           <span class="grow"></span>
           <button class="icon" data-act="archive" title="Archive (E)"><i data-icon="archive"></i></button>
           <button class="icon" data-act="delete" title="Delete (Del)"><i data-icon="trash"></i></button>
+          <button class="icon" data-act="spam" title="Mark as spam (J)"><i data-icon="junk"></i></button>
           <button class="icon" data-act="move" title="Move to folder"><i data-icon="move"></i></button>
           <button class="icon" data-act="unread" title="Mark unread (U)"><i data-icon="unread"></i></button>
           <button class="icon" data-act="star" title="Star (S)"><i data-icon="star"></i></button>
@@ -88,6 +89,8 @@
             <i data-icon="eye_off" data-size="16"></i> Remote images blocked to protect your privacy.
             <button id="btn-load-images" class="link">Load images</button>
           </div>
+          <div id="r-scam" class="scam-bar" hidden></div>
+          <div id="r-receipt" class="receipt-bar" hidden></div>
           <div id="r-attachments"></div>
           <div class="frame-wrap"><iframe id="r-body" sandbox="allow-same-origin" title="Message body"></iframe></div>
         </div>
@@ -160,6 +163,7 @@
         <button type="button" class="primary send-btn" id="c-send"><i data-icon="send" data-size="16"></i> Send</button>
         <button type="button" class="ghost" id="c-attach" title="Attach files"><i data-icon="clip"></i></button>
         <button type="button" class="ghost" id="c-check" title="Check grammar & spelling (LanguageTool)"><i data-icon="type"></i> Check</button>
+        <label class="check small" title="Ask the recipient's mail app to confirm when the message is opened"><input type="checkbox" id="c-receipt"/> Read receipt</label>
         <span class="grow"></span>
         <span class="muted small">Ctrl+Enter to send</span>
         <button type="button" class="ghost" id="c-discard" title="Discard draft"><i data-icon="trash"></i></button>

@@ -31,6 +31,7 @@ document.addEventListener('keydown', (e) => {
   switch (e.key) {
     case 'Delete': e.preventDefault(); deleteMessages(list); break;
     case 'e': e.preventDefault(); archiveMessages(list); break;
+    case 'j': e.preventDefault(); spamMessages(list); break;
     case 'u': e.preventDefault(); setSeen(list, false); break;
     case 's': e.preventDefault(); toggleFlag(list, !(list[0]?.flagged)); break;
     case 't': if (S.view) { e.preventDefault(); quickTaskFromMail(S.view); } break;
@@ -74,6 +75,8 @@ listen('todos-updated', async () => {
   if (S.tab === 'tasks') renderTasks();
 });
 listen('backup-progress', ({ payload }) => onBackupProgress(payload));
+listen('new-mail', () => { if (S.settings.notify_mail) playNotifySound(); });
+listen('s3-error', async ({ payload }) => { await loadS3(); toast(String(payload), 'error'); if (S.tab === 'settings') renderSettings(); });
 listen('nc-synced', async ({ payload }) => {
   await loadNc();
   const changed = payload.contacts_down + payload.tasks_down + payload.deleted;
@@ -103,6 +106,7 @@ async function init() {
   try { const info = await invoke('app_info'); S.mobile = !!info.mobile; S.version = info.version; } catch (_) { /* desktop */ }
   document.body.classList.toggle('mobile', S.mobile);
   await loadNc();
+  await loadS3();
   try {
     S.accounts = await invoke('list_accounts');
     for (const a of S.accounts) S.folders[a.id] = await invoke('list_folders', { accountId: a.id });

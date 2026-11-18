@@ -180,6 +180,8 @@ impl AppState {
         let db = &self.db;
         let known_validity = db.uidvalidity(acct.id, folder)?;
         let cached = db.cached_uids(acct.id, folder)?;
+        let prefs = db.account_prefs(acct.id);
+        let (sync_days, sync_max) = (prefs.sync_days.clamp(1, 3650) as i64, prefs.sync_max.clamp(50, 20_000) as usize);
 
         let (validity, all_uids, headers, flags) = self.with_imap(acct, |c| {
             let mb = c.sess.select(folder)?;
@@ -193,14 +195,14 @@ impl AppState {
             sorted.truncate(limit as usize);
             // UIDs follow arrival order, not message date: imported/restored mail (PST imports,
             // migrations) can push recent messages outside the newest-UID window. Always include
-            // everything dated in the last 14 days as well.
+            // everything dated in the last `sync_days` days as well (account setting, default 14).
             if mb.exists > 0 {
-                let since = (chrono::Utc::now() - chrono::Duration::days(14)).format("%d-%b-%Y").to_string();
+                let since = (chrono::Utc::now() - chrono::Duration::days(sync_days)).format("%d-%b-%Y").to_string();
                 if let Ok(recent) = c.sess.uid_search(format!("SINCE {since}")) {
                     let mut recent: Vec<u32> = recent.into_iter().collect();
                     recent.sort_unstable_by(|a, b| b.cmp(a));
                     let have: HashSet<u32> = sorted.iter().copied().collect();
-                    sorted.extend(recent.into_iter().take(500).filter(|u| !have.contains(u)));
+                    sorted.extend(recent.into_iter().take(sync_max).filter(|u| !have.contains(u)));
                 }
             }
 
@@ -365,10 +367,22 @@ impl AppState {
     // ------------------------------------------------------------------ sending
 
     pub fn send(&self, acct: &Account, draft: &Draft) -> Result<(), String> {
+        let with_self;
+        let draft = if self.db.account_prefs(acct.id).bcc_self {
+            with_self = Draft { bcc: format!("{}{}{}", draft.bcc, if draft.bcc.trim().is_empty() { "" } else { ", " }, acct.email), ..clone_draft(draft) };
+            &with_self
+        } else {
+            draft
+        };
         let mut linked;
         let draft = if draft.link_large && !draft.attachments.is_empty() {
             linked = clone_draft(draft);
-            crate::nextcloud::linkify_attachments(&self.db, &mut linked.body, &mut linked.attachments)?;
+            let s3 = crate::s3::load(&self.db);
+            if s3.enabled && s3.links {
+                crate::s3::linkify_attachments(&self.db, &mut linked.body, &mut linked.attachments)?;
+            } else {
+                crate::nextcloud::linkify_attachments(&self.db, &mut linked.body, &mut linked.attachments)?;
+            }
             &linked
         } else {
             draft
@@ -497,6 +511,62 @@ impl AppState {
         self.with_imap(acct, |c| c.sess.create("Archive"))?;
         self.refresh_folders(acct)?;
         Ok(self.db.folder_by_special(acct.id, "archive")?.unwrap_or_else(|| "Archive".into()))
+    }
+
+    /// Junk folder of the account (created as "Junk" if the server has none).
+    pub fn junk_folder(&self, acct: &Account) -> Result<String, String> {
+        if let Some(f) = self.db.folder_by_special(acct.id, "junk")? {
+            return Ok(f);
+        }
+        self.with_imap(acct, |c| c.sess.create("Junk"))?;
+        self.refresh_folders(acct)?;
+        Ok(self.db.folder_by_special(acct.id, "junk")?.unwrap_or_else(|| "Junk".into()))
+    }
+
+    /// Mark as spam: optionally mark read, then move to Junk (or delete). Not spam: back to Inbox.
+    pub fn mark_spam(&self, acct: &Account, folder: &str, uids: &[u32], spam: bool, action: &str, mark_read: bool) -> Result<String, String> {
+        if spam {
+            if mark_read {
+                self.set_flag(acct, folder, uids, "seen", true)?;
+            }
+            if action == "delete" {
+                self.delete(acct, folder, uids)?;
+                return Ok(String::new());
+            }
+            let target = self.junk_folder(acct)?;
+            if target != folder {
+                self.move_to(acct, folder, uids, &target)?;
+            }
+            Ok(target)
+        } else {
+            let inbox = self.db.folder_by_special(acct.id, "inbox")?.unwrap_or_else(|| "INBOX".into());
+            if inbox != folder {
+                self.move_to(acct, folder, uids, &inbox)?;
+            }
+            Ok(inbox)
+        }
+    }
+
+    /// Sends a read receipt for a message that asked for one, once.
+    pub fn send_receipt(&self, acct: &Account, folder: &str, uid: u32) -> Result<(), String> {
+        let raw = self.raw_message(acct, folder, uid)?;
+        let m = mail_parser::MessageParser::default().parse(&raw).ok_or("Could not read the message")?;
+        let to = m.header_raw("Disposition-Notification-To").map(|v| v.trim().to_string()).filter(|v| !v.is_empty()).ok_or("This message did not ask for a read receipt")?;
+        let mid = m.message_id().map(|s| format!("<{s}>")).unwrap_or_default();
+        let key = format!("mdn-sent:{}", if mid.is_empty() { format!("{}/{folder}/{uid}", acct.id) } else { mid.clone() });
+        if self.db.get_setting(&key).is_some() {
+            return Ok(());
+        }
+        let from = lettre::message::Mailbox::new(Some(acct.name.clone()).filter(|n| !n.is_empty()), acct.email.parse().map_err(|_| "Bad account address")?);
+        let (env, bytes) = crate::smtp::build_receipt(&from, &to, m.subject().unwrap_or(""), &mid)?;
+        let auth = self.auth_for(acct)?;
+        crate::smtp::send_raw(acct, &auth, &env, &bytes)?;
+        self.db.set_setting(&key, "1")
+    }
+
+    /// Whether a read receipt was already sent (or declined) for this message.
+    pub fn receipt_done(&self, message_id: &str) -> bool {
+        !message_id.is_empty() && self.db.get_setting(&format!("mdn-sent:{message_id}")).is_some()
     }
 
     pub fn archive(&self, acct: &Account, folder: &str, uids: &[u32]) -> Result<String, String> {
@@ -656,12 +726,7 @@ impl AppState {
 }
 
 fn clone_draft(d: &Draft) -> Draft {
-    Draft {
-        account_id: d.account_id, to: d.to.clone(), cc: d.cc.clone(), bcc: d.bcc.clone(), subject: d.subject.clone(),
-        body: d.body.clone(), in_reply_to: d.in_reply_to.clone(), references: d.references.clone(),
-        attachments: d.attachments.clone(), forward_from: d.forward_from.clone(), reply_to_msg: d.reply_to_msg.clone(),
-        draft: d.draft.clone(), local_draft_id: d.local_draft_id, message_id: d.message_id.clone(), link_large: d.link_large,
-    }
+    d.clone()
 }
 
 pub fn new_message_id() -> String {

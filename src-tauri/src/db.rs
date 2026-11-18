@@ -200,6 +200,17 @@ impl Db {
     }
 
     // ---------- accounts ----------
+    /// Saves edited account details (Server Settings / identity). The address and type stay.
+    pub fn update_account(&self, a: &Account) -> R<()> {
+        self.c()
+            .execute(
+                "UPDATE accounts SET name=?2, imap_host=?3, imap_port=?4, smtp_host=?5, smtp_port=?6, smtp_security=?7, username=?8, save_sent=?9 WHERE id=?1",
+                params![a.id, a.name, a.imap_host, a.imap_port, a.smtp_host, a.smtp_port, a.smtp_security, a.username, a.save_sent],
+            )
+            .map_err(e)?;
+        Ok(())
+    }
+
     pub fn insert_account(&self, a: &Account) -> R<i64> {
         let c = self.c();
         c.execute(
@@ -740,5 +751,16 @@ impl Db {
     }
     pub fn del_secret(&self, key: &str) {
         let _ = self.c().execute("DELETE FROM secrets WHERE key=?1", [key]);
+    }
+}
+
+impl Db {
+    /// Per-account options saved by the UI (app settings → account_prefs.<id>).
+    pub fn account_prefs(&self, account_id: i64) -> crate::models::AccountPrefs {
+        self.get_setting("app")
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| v.get("account_prefs").and_then(|p| p.get(account_id.to_string())).cloned())
+            .and_then(|p| serde_json::from_value(p).ok())
+            .unwrap_or_default()
     }
 }

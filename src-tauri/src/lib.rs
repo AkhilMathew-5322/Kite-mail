@@ -12,6 +12,7 @@ mod models;
 mod nextcloud;
 mod oauth;
 mod pair;
+mod s3;
 mod push;
 mod secrets;
 mod smtp;
@@ -52,6 +53,7 @@ pub fn run() {
             commands::list_accounts,
             commands::add_account,
             commands::reconnect_account,
+            commands::update_account,
             commands::cancel_sign_in,
             commands::remove_account,
             commands::list_folders,
@@ -96,6 +98,17 @@ pub fn run() {
             commands::nc_sync_now,
             commands::nc_task_lists,
             commands::nc_backup_now,
+            commands::s3_get_config,
+            commands::s3_connect,
+            commands::s3_save_options,
+            commands::s3_disconnect,
+            commands::s3_backup_now,
+            commands::mark_spam,
+            commands::read_receipt,
+            commands::receipt_done,
+            commands::read_signature_file,
+            commands::pick_one_file,
+            commands::file_data_url,
             commands::pair_start,
             commands::pair_import,
             commands::pair_stop,

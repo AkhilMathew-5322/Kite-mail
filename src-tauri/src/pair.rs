@@ -23,6 +23,9 @@ pub const PAIR_SECONDS: u64 = 600;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct PairAccount {
+    /// Per-account options (identity, aliases, colour, sync…) – re-keyed to the new id on import.
+    #[serde(default)]
+    pub prefs: serde_json::Value,
     pub name: String,
     pub email: String,
     pub kind: String,
@@ -50,6 +53,8 @@ pub struct Payload {
     pub todos: Vec<Todo>,
     pub settings: serde_json::Value,
     pub nextcloud: Option<(nextcloud::NcConfig, String)>,
+    #[serde(default)]
+    pub s3: Option<(crate::s3::S3Config, String)>,
 }
 
 #[derive(Serialize, Debug, Default)]
@@ -82,12 +87,14 @@ pub struct PairInfo {
 pub fn build_payload(db: &Db) -> Result<Payload, String> {
     let settings: serde_json::Value = db.get_setting("app").and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_else(|| serde_json::json!({}));
     let sigs = settings.get("signatures").cloned().unwrap_or_default();
+    let prefs = settings.get("account_prefs").cloned().unwrap_or_default();
     let mut accounts = Vec::new();
     for a in db.accounts()? {
         let key = if a.is_oauth() { secrets::refresh_key(a.id) } else { secrets::password_key(a.id) };
         let secret = secrets::get(db, &key).unwrap_or_default();
         accounts.push(PairAccount {
             signature: sigs.get(a.id.to_string()).and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            prefs: prefs.get(a.id.to_string()).cloned().unwrap_or(serde_json::Value::Null),
             name: a.name, email: a.email, kind: a.kind, imap_host: a.imap_host, imap_port: a.imap_port,
             smtp_host: a.smtp_host, smtp_port: a.smtp_port, smtp_security: a.smtp_security, username: a.username,
             tenant: a.tenant, client_id: a.client_id, client_secret: a.client_secret, save_sent: a.save_sent, secret,
@@ -99,9 +106,13 @@ pub fn build_payload(db: &Db) -> Result<Payload, String> {
     } else {
         None
     };
+    let s3c = crate::s3::load(db);
+    let s3 = if s3c.enabled { secrets::get(db, crate::s3::SECRET_KEY).map(|k| (s3c, k)) } else { None };
     let mut settings = settings;
     if let Some(o) = settings.as_object_mut() {
         o.remove("signatures"); // re-keyed per account on import
+        o.remove("account_prefs");
+        o.remove("default_account");
     }
     Ok(Payload {
         v: 1,
@@ -111,6 +122,7 @@ pub fn build_payload(db: &Db) -> Result<Payload, String> {
         todos: db.todos()?.into_iter().filter(|t| !t.done).collect(),
         settings,
         nextcloud,
+        s3,
     })
 }
 
@@ -126,6 +138,7 @@ pub fn import_payload(db: &Db, p: Payload) -> Result<ImportReport, String> {
         }
     }
     let mut sigs = app.get("signatures").cloned().unwrap_or_else(|| serde_json::json!({}));
+    let mut prefs = app.get("account_prefs").cloned().unwrap_or_else(|| serde_json::json!({}));
 
     for a in p.accounts {
         if existing.contains(&a.email.to_lowercase()) {
@@ -145,9 +158,13 @@ pub fn import_payload(db: &Db, p: Payload) -> Result<ImportReport, String> {
         if !a.signature.is_empty() {
             sigs[id.to_string()] = serde_json::Value::String(a.signature);
         }
+        if a.prefs.is_object() {
+            prefs[id.to_string()] = a.prefs;
+        }
         rep.accounts += 1;
     }
     app["signatures"] = sigs;
+    app["account_prefs"] = prefs;
     db.set_setting("app", &app.to_string())?;
 
     // With Nextcloud sync on, contacts/tasks arrive from the server – importing them too would duplicate.
@@ -158,6 +175,12 @@ pub fn import_payload(db: &Db, p: Payload) -> Result<ImportReport, String> {
             nextcloud::save(db, cfg)?;
             secrets::set(db, nextcloud::PASSWORD_KEY, pw)?;
             rep.nextcloud = true;
+        }
+    }
+    if let Some((cfg, secret)) = &p.s3 {
+        if !crate::s3::load(db).enabled {
+            crate::s3::save(db, &crate::s3::S3Config { last_backup: Default::default(), ..cfg.clone() })?;
+            secrets::set(db, crate::s3::SECRET_KEY, secret)?;
         }
     }
     if !nc_handles(true) {
@@ -348,7 +371,8 @@ mod tests {
         };
         let id = desk.insert_account(&acct).unwrap();
         secrets::set(&desk, &secrets::refresh_key(id), "REFRESH-TOKEN-XYZ").unwrap();
-        desk.set_setting("app", &serde_json::json!({"light_theme": "ocean", "signatures": {id.to_string(): "Akhil · TLR"}}).to_string()).unwrap();
+        desk.set_setting("app", &serde_json::json!({"light_theme": "ocean", "signatures": {id.to_string(): "Akhil · TLR"},
+            "account_prefs": {id.to_string(): {"color": "#1e66f5", "bcc_self": true, "sync_days": 30}}}).to_string()).unwrap();
         desk.save_contact(&Contact { name: "Sara Khan".into(), email: "sara@kb.com".into(), phone: "+971".into(), ..Default::default() }).unwrap();
         desk.save_todo(&Todo { title: "Call Ahmed".into(), due: Some(2_000_000_000), ..Default::default() }).unwrap();
         desk.save_todo(&Todo { title: "Old done".into(), done: true, ..Default::default() }).unwrap();
@@ -372,6 +396,9 @@ mod tests {
         let app: serde_json::Value = serde_json::from_str(&phone.get_setting("app").unwrap()).unwrap();
         assert_eq!(app["light_theme"], "ocean");
         assert_eq!(app["signatures"][a.id.to_string()], "Akhil · TLR");
+        assert_eq!(app["account_prefs"][a.id.to_string()]["color"], "#1e66f5");
+        assert!(phone.account_prefs(a.id).bcc_self);
+        assert_eq!(phone.account_prefs(a.id).sync_days, 30);
         assert_eq!(phone.todos().unwrap().len(), 1, "completed tasks are not copied");
 
         // ---- the same code works again (re-pair / second phone) and never duplicates

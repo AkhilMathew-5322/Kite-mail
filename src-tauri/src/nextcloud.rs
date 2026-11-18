@@ -349,17 +349,24 @@ pub fn share_file(db: &Db, path: &std::path::Path) -> R<String> {
     })
 }
 
-/// Replaces large local attachments with share links appended to the body.
+/// Replaces large local attachments with Nextcloud share links appended to the body.
 pub fn linkify_attachments(db: &Db, body: &mut String, paths: &mut Vec<String>) -> R<u32> {
     let cfg = load(db);
-    let limit = cfg.link_threshold_mb.max(1) as u64 * 1024 * 1024;
+    let exp = if cfg.link_expire_days > 0 { format!(" (links expire in {} days)", cfg.link_expire_days) } else { String::new() };
+    linkify_with(body, paths, cfg.link_threshold_mb, &format!("Files shared via Nextcloud{exp}"), |p| share_file(db, p))
+}
+
+/// Uploads every attachment of `threshold_mb` or more with `upload` and lists the links in the
+/// body (above the quoted original, if any). Shared by Nextcloud and S3.
+pub fn linkify_with(body: &mut String, paths: &mut Vec<String>, threshold_mb: u32, heading: &str, upload: impl Fn(&std::path::Path) -> R<String>) -> R<u32> {
+    let limit = threshold_mb.max(1) as u64 * 1024 * 1024;
     let mut links = Vec::new();
     let mut keep = Vec::new();
     for p in paths.drain(..) {
         let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
         if size >= limit {
             let path = std::path::Path::new(&p);
-            let url = share_file(db, path)?;
+            let url = upload(path)?;
             let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             links.push(format!("📎 {name} ({:.1} MB): {url}", size as f64 / 1_048_576.0));
         } else {
@@ -368,9 +375,7 @@ pub fn linkify_attachments(db: &Db, body: &mut String, paths: &mut Vec<String>) 
     }
     *paths = keep;
     if !links.is_empty() {
-        let exp = if cfg.link_expire_days > 0 { format!(" (links expire in {} days)", cfg.link_expire_days) } else { String::new() };
-        let block = format!("\n\nFiles shared via Nextcloud{exp}:\n{}\n", links.join("\n"));
-        // put links above the quoted original, if any
+        let block = format!("\n\n{heading}:\n{}\n", links.join("\n"));
         match body.find("\n\nOn ").or_else(|| body.find("\n\n---------- Forwarded")) {
             Some(i) => body.insert_str(i, &block),
             None => body.push_str(&block),

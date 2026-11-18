@@ -163,12 +163,14 @@ fn end_to_end_imap_smtp() {
         attachments: vec![tmp.to_string_lossy().into_owned()], forward_from: None,
         reply_to_msg: Some(MsgRef { folder: "Projects/TLR".into(), uid: moved[0].uid }),
         draft: None, local_draft_id: None, message_id: None, link_large: false,
+        ..Default::default()
     }).unwrap();
     st.send(&acct, &Draft {
         account_id: acct.id, to: "dave@example.com".into(), cc: "".into(), bcc: "".into(),
         subject: "Fwd: Café invoice".into(), body: "FYI".into(), in_reply_to: None, references: None,
         attachments: vec![], forward_from: Some(MsgRef { folder: "Projects/TLR".into(), uid: moved[0].uid }), reply_to_msg: None,
         draft: None, local_draft_id: None, message_id: None, link_large: false,
+        ..Default::default()
     }).unwrap();
 
     let mut sent_files: Vec<_> = std::fs::read_dir(out_dir).unwrap().map(|e| e.unwrap().path()).filter(|p| mine(p)).collect();
@@ -204,6 +206,7 @@ fn draft(account_id: i64, to: &str, subject: &str, body: &str) -> Draft {
         account_id, to: to.into(), cc: String::new(), bcc: "hidden@example.com".into(), subject: subject.into(), body: body.into(),
         in_reply_to: None, references: None, attachments: vec![], forward_from: None, reply_to_msg: None,
         draft: None, local_draft_id: None, message_id: None, link_large: false,
+        ..Default::default()
     }
 }
 
@@ -434,4 +437,90 @@ fn end_to_end_nextcloud() {
     assert!(body.find("http://localhost").unwrap() < body.find("On Mon").unwrap(), "links above the quote");
     let day = chrono::Local::now().format("%Y-%m-%d").to_string();
     assert!(std::path::Path::new(&format!("/tmp/davroot/files/Kite Mail Attachments/{day}/Q4 report big.pdf")).exists());
+}
+
+/// S3: real SigV4 against a local S3 server that checks signatures (moto with auth on; keys in
+/// /tmp/s3keys as "ACCESS SECRET", bucket "kite-backups" on :9010). Skipped unless LM_IT=1.
+#[test]
+fn end_to_end_s3() {
+    if std::env::var("LM_IT").is_err() {
+        eprintln!("skipped (set LM_IT=1)");
+        return;
+    }
+    use crate::s3;
+    let keys = std::fs::read_to_string("/tmp/s3keys").expect("run the S3 test server first");
+    let (ak, sk) = keys.trim().split_once(' ').unwrap();
+    let st = AppState::new(Db::memory());
+    let db = &st.db;
+    let mut cfg = s3::S3Config {
+        endpoint: "http://127.0.0.1:9010".into(),
+        bucket: "kite-backups".into(),
+        access_key: ak.into(),
+        prefix: "it-test".into(),
+        path_style: true,
+        enabled: true,
+        backup_keep: 2,
+        link_threshold_mb: 1,
+        link_expire_days: 3,
+        ..Default::default()
+    };
+    // wrong secret / bucket give readable errors
+    let e = s3::Client::new(&cfg, "not-the-secret").unwrap().test().unwrap_err();
+    assert!(e.contains("secret key is wrong"), "{e}");
+    let bad = s3::S3Config { bucket: "no-such-bucket-here".into(), ..cfg.clone() };
+    let e = s3::Client::new(&bad, sk).unwrap().test().unwrap_err();
+    assert!(e.contains("bucket does not exist"), "{e}");
+    s3::Client::new(&cfg, sk).unwrap().test().unwrap();
+    crate::secrets::set(db, s3::SECRET_KEY, sk).unwrap();
+    s3::save(db, &cfg).unwrap();
+    let (_, c) = s3::client(db).unwrap();
+    for k in c.list("it-test/").unwrap() {
+        c.delete(&k).unwrap();
+    }
+
+    // backups with retention (keep 2)
+    let dir = std::env::temp_dir().join(format!("kite-s3-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for day in 1..=3 {
+        let f = dir.join(format!("kitemail-backup-akhil_at_x-2026-01-0{day}.zip"));
+        std::fs::write(&f, format!("zip {day}")).unwrap();
+        let dest = s3::upload_backup(db, &f, "akhil@x.ae").unwrap();
+        assert!(dest.starts_with("kite-backups/it-test/backups/akhil@x.ae/"), "{dest}");
+    }
+    let mut left = c.list("it-test/backups/").unwrap();
+    left.sort();
+    assert_eq!(left.len(), 2, "{left:?}");
+    assert!(left[0].ends_with("2026-01-02.zip") && left[1].ends_with("2026-01-03.zip"));
+    assert!(s3::backup_due(&s3::load(db), "akhil@x.ae"));
+    s3::mark_backup(db, "akhil@x.ae", None).unwrap();
+    assert!(!s3::backup_due(&s3::load(db), "akhil@x.ae"));
+
+    // large attachment -> pre-signed link that downloads the same bytes, original file name.
+    // (moto's signature-checking mode can't serve pre-signed GETs, so links are exercised on a
+    //  second, non-checking instance on :9011; the link signature itself is verified against
+    //  AWS's published example in s3::tests.)
+    cfg.endpoint = "http://127.0.0.1:9011".into();
+    s3::save(db, &cfg).unwrap();
+    let big = dir.join("Case file – Ü 2026.pdf");
+    let bytes: Vec<u8> = (0..1_500_000u32).map(|i| (i % 251) as u8).collect();
+    std::fs::write(&big, &bytes).unwrap();
+    let small = dir.join("note.txt");
+    std::fs::write(&small, "hi").unwrap();
+    let mut body = "Please see below.\n\nOn Mon, X wrote:\n> old".to_string();
+    let mut paths = vec![big.to_string_lossy().into_owned(), small.to_string_lossy().into_owned()];
+    assert_eq!(s3::linkify_attachments(db, &mut body, &mut paths).unwrap(), 1);
+    assert_eq!(paths, vec![small.to_string_lossy().into_owned()]);
+    assert!(body.contains("expire in 3 days") && body.find("📎").unwrap() < body.find("On Mon").unwrap(), "{body}");
+    let url = body.split("): ").nth(1).unwrap().split_whitespace().next().unwrap();
+    assert!(url.contains("X-Amz-Expires=259200"), "{url}");
+    let resp = ureq::get(url).call().unwrap();
+    assert!(resp.header("Content-Disposition").unwrap_or("").contains("Case"), "{:?}", resp.header("Content-Disposition"));
+    let mut got = Vec::new();
+    std::io::Read::read_to_end(&mut resp.into_reader(), &mut got).unwrap();
+    assert_eq!(got, bytes);
+
+    cfg.enabled = false;
+    s3::save(db, &cfg).unwrap();
+    assert!(!s3::backup_due(&s3::load(db), "other@x.ae"));
+    let _ = std::fs::remove_dir_all(&dir);
 }

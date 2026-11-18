@@ -100,17 +100,40 @@ pub struct MessageView {
     pub text: String,
     pub has_remote: bool,
     pub attachments: Vec<AttachmentInfo>,
+    /// Sender asked for a read receipt (Disposition-Notification-To), if any.
+    pub mdn_to: String,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Clone, Debug, Default)]
 pub struct MsgRef {
     pub folder: String,
     pub uid: u32,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone, Default)]
 pub struct Draft {
     pub account_id: i64,
+    /// Sending identity (an alias of the account); empty = the account's own name/address.
+    #[serde(default)]
+    pub from_name: String,
+    #[serde(default)]
+    pub from_email: String,
+    #[serde(default)]
+    pub reply_to: String,
+    #[serde(default)]
+    pub organization: String,
+    /// Ask the recipient's mail app to send a read receipt.
+    #[serde(default)]
+    pub request_receipt: bool,
+    /// Attach the sender's contact card (.vcf).
+    #[serde(default)]
+    pub vcard: bool,
+    /// HTML signature: `sig_text` is its plain-text form as it appears in `body`; in the HTML
+    /// part that text is replaced by `sig_html`.
+    #[serde(default)]
+    pub sig_text: String,
+    #[serde(default)]
+    pub sig_html: String,
     pub to: String,
     #[serde(default)]
     pub cc: String,
@@ -163,6 +186,8 @@ pub struct MsgRefOut {
 #[derive(Serialize, Debug)]
 pub struct DraftView {
     pub account_id: i64,
+    pub from_email: String,
+    pub receipt: bool,
     pub to: String,
     pub cc: String,
     pub bcc: String,
@@ -226,4 +251,23 @@ pub struct Progress {
     pub folder: String,
     pub done: u64,
     pub total: u64,
+}
+
+/// Per-account options (Thunderbird's "Account Settings"), stored in the app settings under
+/// account_prefs.<id>. Only what the backend needs is read here; the UI keeps the rest.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(default)]
+pub struct AccountPrefs {
+    pub bcc_self: bool,
+    /// Messages dated within this many days are always synced (on top of the newest `sync_max`).
+    pub sync_days: u32,
+    pub sync_max: u32,
+    /// Download message bodies in the background for offline reading.
+    pub offline_bodies: bool,
+}
+
+impl Default for AccountPrefs {
+    fn default() -> Self {
+        Self { bcc_self: false, sync_days: 14, sync_max: 500, offline_bodies: true }
+    }
 }

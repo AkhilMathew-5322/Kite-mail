@@ -192,6 +192,7 @@ pub fn build_view(raw: &[u8], summary: MsgSummary) -> Result<MessageView, String
         text,
         has_remote,
         attachments,
+        mdn_to: m.header_raw("Disposition-Notification-To").map(|v| v.trim().to_string()).unwrap_or_default(),
         summary,
     })
 }
@@ -209,6 +210,7 @@ pub fn draft_view(account_id: i64, raw: &[u8]) -> Result<DraftView, String> {
     let mut to = format_address_list(m.to());
     let mut cc = format_address_list(m.cc());
     let mut bcc = format_address_list(m.bcc());
+    let from_email = m.from().and_then(|a| a.first()).and_then(|a| a.address()).unwrap_or("").to_string();
     if let Some(enc) = m.header_raw(crate::smtp::DRAFT_HEADER) {
         if let Ok(bytes) = STANDARD.decode(enc.split_whitespace().collect::<String>()) {
             if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
@@ -221,6 +223,8 @@ pub fn draft_view(account_id: i64, raw: &[u8]) -> Result<DraftView, String> {
     }
     Ok(DraftView {
         account_id,
+        from_email,
+        receipt: m.header_raw("Disposition-Notification-To").is_some(),
         to,
         cc,
         bcc,

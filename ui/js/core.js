@@ -172,3 +172,7 @@ function debounce(fn, ms) {
 /** datetime-local value <-> unix seconds */
 const toLocalInput = (ts) => { if (!ts) return ''; const d = new Date(ts * 1000); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); };
 const fromLocalInput = (v) => (v ? Math.floor(new Date(v).getTime() / 1000) : null);
+
+// Unexpected script errors become a visible message instead of a silently dead button.
+window.addEventListener('error', (e) => { try { toast(`Something went wrong: ${e.message}`, 'error'); } catch (_) { /* toast unavailable */ } });
+window.addEventListener('unhandledrejection', (e) => { try { toast(`Something went wrong: ${errText(e.reason)}`, 'error'); } catch (_) { /* toast unavailable */ } });

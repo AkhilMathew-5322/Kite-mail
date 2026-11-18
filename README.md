@@ -4,6 +4,18 @@ Kite Mail is a lightweight email client for **Windows, Linux and Android**. It's
 
 **Supported accounts:** Microsoft 365 (OAuth), Gmail (OAuth), and any provider that supports IMAP and SMTP.
 
+## What's new in 0.4 (Thunderbird-style settings, S3, solid themes)
+- **S3 object storage** (Settings → Cloud & Backup): Amazon S3, Oracle Cloud Object Storage, Cloudflare R2, Wasabi, MinIO and other S3-compatible storage. Daily/weekly mailbox backups with "keep the latest N", one-click backup per account, and large attachments sent as private download links that expire (1–7 days). Keys are stored in the system keychain; requests are signed with AWS Signature V4.
+- **Account settings like Thunderbird** (Settings → Accounts → Settings): account name and colour, default account, your name, reply-to, organization, HTML signatures (or a signature file), attach your vCard, **other identities / aliases** to send from, server settings (test & save), save sent copies, Bcc yourself, reply above/below the quote, read-receipt requests, how many days of mail to keep in sync and offline copies.
+- **Solid colour themes:** Black, Blue, Charcoal, Emerald, Maroon, Purple, White, Sky Blue, Silver – flat colours, no gradients. **Animations are off by default** (Appearance → Animations).
+- **Notifications:** choose what they show (sender & subject / sender only / just "New mail") and a sound (built-in chime, your own sound file, or silent).
+- **Privacy & Security:** scam detection warns about links whose text shows a different site than where they go, raw-IP links, look-alike (punycode) domains and senders whose name pretends to be another address. **Return receipts:** ask / always / never send when a sender requests one.
+- **Spam:** Spam button and **J** shortcut – move to Junk (created if missing) or delete, optionally mark read; "Not spam" in the Junk folder moves mail back to the Inbox.
+- Settings are now organised in sections with a side menu (chips on phones).
+- Security: lettre upgraded to 0.11.24 (six SMTP advisories published 2026-11-17).
+
+Not included on purpose: chat (Thunderbird's IRC/XMPP), an add-on store, and DNS-over-HTTPS – they add size and attack surface without helping email work. OpenPGP / S/MIME encryption is a planned next step.
+
 ## What's new in 0.3.1 (QA + security release)
 - **Security:** `cargo audit` reports **0 vulnerabilities**. SQLite, zip and the IMAP library were upgraded (the old IMAP parser used an unsound number-parsing crate). The few remaining "unmaintained" notices come from Tauri's own Linux stack (GTK3/D-Bus) and are listed with reasons in `src-tauri/.cargo/audit.toml`. CI now fails on any new advisory.
 - **Account switcher on Android:** tap your avatar (top right) for a bottom sheet with every account, its unread count and colour. **Swipe the avatar** up/down or left/right to flip straight to the next account. A red dot means new mail in another account, each account reopens at the folder you last used, and the drawer shows only the current account's folders.
@@ -114,9 +126,9 @@ Every push to `main` builds the Windows installer, the Linux packages and the An
 
 **Permanent download links:** tag a version and GitHub creates a **Release** with every installer attached:
 ```bash
-git tag v0.3.1 && git push origin v0.3.1
+git tag v0.4.0 && git push origin v0.4.0
 ```
-You can also use **Releases → Draft a new release → Choose a tag → `v0.3.1`**.
+You can also use **Releases → Draft a new release → Choose a tag → `v0.4.0`**.
 
 ---
 
@@ -200,13 +212,14 @@ src-tauri/src/
   pair.rs       encrypted one-time phone pairing (AES-256-GCM, QR, LAN transfer)
   db.rs         SQLite cache, contacts, tasks, settings, local drafts
   secrets.rs    OS keyring with fallback
-  it_tests.rs   end-to-end tests against real IMAP/SMTP servers
+  it_tests.rs   end-to-end tests against real IMAP/SMTP servers, Nextcloud/DAV and S3
+                (S3: `moto_server -p 9010` with INITIAL_NO_AUTH_ACTION_COUNT set, so signatures are checked)
 ```
 
 ## Tests
 ```bash
 cd src-tauri
-cargo test                       # 21 unit tests (incl. a full pairing over the network)
+cargo test                       # 28 unit tests (incl. pairing over the network and AWS SigV4 test vectors)
 cargo audit                      # dependency security check (policy: .cargo/audit.toml)
 LM_IT=1 cargo test it_tests      # 3 end-to-end tests against real servers:
                                  #   IMAPS localhost:993 + SMTPS :4650 (Dovecot + aiosmtpd),

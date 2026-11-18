@@ -8,33 +8,82 @@ function prefixSubject(prefix, subject) {
   return new RegExp('^' + prefix + '\\s*:', 'i').test(s) ? s : `${prefix}: ${s}`;
 }
 
-function signatureFor(accountId) {
-  const sig = (S.settings.signatures || {})[accountId];
-  return sig ? `\n\n-- \n${sig}` : '';
+/** Plain text of an HTML snippet, keeping line breaks. */
+function htmlToText(html) {
+  const d = new DOMParser().parseFromString(String(html).replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|li|tr|h\d)>/gi, '\n'), 'text/html');
+  return (d.body.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
 }
+
+/** The account's signature: { text } for plain, { text, html } for HTML (text = what the editor shows). */
+async function signatureInfo(accountId) {
+  const p = aprefs(accountId);
+  let content = (S.settings.signatures || {})[accountId] || '';
+  let isHtml = p.sig_html;
+  if (p.sig_file_on && p.sig_file) {
+    try {
+      content = await invoke('read_signature_file', { path: p.sig_file });
+      isHtml = /\.html?$/i.test(p.sig_file) || /<\w+[^>]*>/.test(content);
+    } catch (e) { toast(`Signature file: ${errText(e)}`, 'error'); }
+  }
+  content = content.trim();
+  if (!content) return { text: '', html: '' };
+  return isHtml ? { text: htmlToText(content), html: content } : { text: content, html: '' };
+}
+
+function signatureFor(accountId) {
+  const sig = S.compose?.sigFor === accountId ? S.compose.sig : null;
+  return sig?.text ? `\n\n-- \n${sig.text}` : '';
+}
+
+/** From choices: each account plus its extra identities. value = "accountId:index" (-1 = main). */
+function fromOptions() {
+  return S.accounts.map((a) => {
+    const main = `<option value="${a.id}:-1">${esc(a.name)} &lt;${esc(a.email)}&gt;</option>`;
+    const ids = aprefs(a.id).identities.filter((x) => x.email).map((x, i) => `<option value="${a.id}:${i}">${esc(x.name || a.name)} &lt;${esc(x.email)}&gt;</option>`);
+    return main + ids.join('');
+  }).join('');
+}
+const fromAccountId = () => Number(String($('#c-from').value).split(':')[0]);
 
 /**
  * Opens the compose sheet.
  * opts: { mode: new|reply|replyall|forward|draft, view, to, cc, bcc, subject, body, accountId, draftRef, localId, messageId, attachments }
  */
-function openCompose(opts = {}) {
+async function openCompose(opts = {}) {
   if (!S.accounts.length) { toast('Add an account first', 'error'); return; }
   let { mode = 'new', view = null, to = '', cc = '', bcc = '', subject = '', body = '' } = opts;
   const fromSel = $('#c-from');
-  fromSel.innerHTML = S.accounts.map((a) => `<option value="${a.id}">${esc(a.name)} &lt;${esc(a.email)}&gt;</option>`).join('');
-  const accountId = opts.accountId ?? view?.summary.account_id ?? S.cur?.accountId ?? S.accounts[0].id;
-  fromSel.value = String(accountId);
+  fromSel.innerHTML = fromOptions();
+  const def = S.accounts.some((a) => a.id === S.settings.default_account) ? S.settings.default_account : null;
+  const accountId = opts.accountId ?? view?.summary.account_id ?? S.cur?.accountId ?? def ?? S.accounts[0].id;
+  fromSel.value = `${accountId}:-1`;
+  // replying to mail sent to one of our aliases: answer from that alias
+  if (view) {
+    const rcpts = `${view.to}, ${view.cc}`.toLowerCase();
+    const i = aprefs(accountId).identities.findIndex((x) => x.email && rcpts.includes(x.email.toLowerCase()));
+    if (i >= 0) fromSel.value = `${accountId}:${i}`;
+  }
+  if (opts.fromEmail) {
+    const i = aprefs(accountId).identities.findIndex((x) => x.email.toLowerCase() === opts.fromEmail.toLowerCase());
+    if (i >= 0) fromSel.value = `${accountId}:${i}`;
+  }
+  const prefs = aprefs(accountId);
+  const sig = mode === 'draft' ? { text: '', html: '' } : await signatureInfo(accountId);
 
   S.compose = {
     mode, in_reply_to: null, references: null, forward_from: null, reply_to_msg: null, files: [], fwdNames: [],
     draft: opts.draftRef || null, local_draft_id: opts.localId || null, message_id: opts.messageId || null,
-    dirty: false, saving: false, timer: null, issues: [],
+    dirty: false, saving: false, timer: null, issues: [], sig, sigFor: accountId,
   };
+  if (mode === 'draft') {  // keep an HTML signature working when a draft is reopened
+    const s2 = await signatureInfo(accountId);
+    if (s2.html && body.includes(s2.text)) S.compose.sig = s2;
+  }
   if (view) {
     const s = view.summary;
     const ref = { folder: s.folder, uid: s.uid };
     const who = fmtAddr(s.from_name, s.from_addr);
-    const quoted = messageText(view).split('\n').map((l) => (l ? '> ' + l : '>')).join('\n');
+    const quoted = prefs.quote ? messageText(view).split('\n').map((l) => (l ? '> ' + l : '>')).join('\n') : '';
     if (mode === 'reply' || mode === 'replyall') {
       to = view.reply_to || who;
       if (mode === 'replyall') {
@@ -47,7 +96,10 @@ function openCompose(opts = {}) {
         }).join(', ');
       }
       subject = prefixSubject('Re', s.subject);
-      body = `${signatureFor(accountId)}\n\nOn ${fmtDate(s.date, true)}, ${who} wrote:\n${quoted}`;
+      const head = quoted ? `On ${fmtDate(s.date, true)}, ${who} wrote:\n${quoted}` : '';
+      body = prefs.reply_position === 'below' && head
+        ? `${head}\n\n${signatureFor(accountId)}`
+        : `${signatureFor(accountId)}${head ? '\n\n' + head : ''}`;
       S.compose.in_reply_to = view.message_id || null;
       S.compose.references = view.references || null;
       S.compose.reply_to_msg = ref;
@@ -73,13 +125,20 @@ function openCompose(opts = {}) {
   $$('.field.cc').forEach((f) => (f.hidden = !(cc || bcc)));
   $('#c-subject').value = subject;
   $('#c-body').value = body;
+  $('#c-receipt').checked = mode === 'draft' ? !!opts.receipt : prefs.request_receipt;
   $('#c-status').textContent = S.compose.draft ? 'Saved draft' : '';
   $('#c-grammar').hidden = true;
   renderComposeFiles();
   $('#compose').showModal();
   if (S.mobile || $('#app').classList.contains('narrow')) pushLayer('compose', () => { if (S.compose) closeCompose(); });
   const ta = $('#c-body');
-  if (to) { ta.focus(); ta.setSelectionRange(0, 0); ta.scrollTop = 0; } else $('#c-to').focus();
+  if (to) {
+    ta.focus();
+    // reply below the quote: cursor after the quoted text
+    const at = (mode === 'reply' || mode === 'replyall') && prefs.reply_position === 'below' && prefs.quote ? body.length - signatureFor(accountId).length : 0;
+    ta.setSelectionRange(at, at);
+    if (!at) ta.scrollTop = 0;
+  } else $('#c-to').focus();
 }
 
 async function openDraftMessage(m) {
@@ -87,7 +146,7 @@ async function openDraftMessage(m) {
     const d = await withBusy('Opening draft…', () => invoke('open_draft', { accountId: m.account_id, folder: m.folder, uid: m.uid }));
     openCompose({
       mode: 'draft', accountId: d.account_id, to: d.to, cc: d.cc, bcc: d.bcc, subject: d.subject, body: d.body,
-      draftRef: { folder: m.folder, uid: m.uid }, messageId: d.message_id,
+      draftRef: { folder: m.folder, uid: m.uid }, messageId: d.message_id, fromEmail: d.from_email, receipt: d.receipt,
       in_reply_to: d.in_reply_to, references: d.references, attachments: d.attachments,
     });
   } catch (e) { toast(errText(e), 'error'); }
@@ -95,8 +154,17 @@ async function openDraftMessage(m) {
 
 function composePayload() {
   const c = S.compose;
+  const [accId, idx] = String($('#c-from').value).split(':').map(Number);
+  const a = acct(accId) || {};
+  const p = aprefs(accId);
+  const ident = idx >= 0 ? p.identities[idx] : null;
+  const sig = c.sigFor === accId ? c.sig : null;
   return {
-    account_id: Number($('#c-from').value),
+    account_id: accId,
+    from_name: ident ? (ident.name || a.name) : '', from_email: ident ? ident.email : '',
+    reply_to: (ident ? ident.reply_to : '') || p.reply_to, organization: (ident ? ident.organization : '') || p.organization,
+    request_receipt: $('#c-receipt').checked, vcard: p.attach_vcard,
+    sig_text: sig?.html ? sig.text : '', sig_html: sig?.html || '',
     to: $('#c-to').value, cc: $('#c-cc').value, bcc: $('#c-bcc').value,
     subject: $('#c-subject').value, body: $('#c-body').value,
     in_reply_to: c.in_reply_to, references: c.references,
@@ -161,7 +229,7 @@ async function saveDraft(quiet = true) {
 
 async function closeCompose() {
   const c = S.compose;
-  const empty = !$('#c-to').value.trim() && !$('#c-subject').value.trim() && $('#c-body').value.trim() === signatureFor(Number($('#c-from').value)).trim();
+  const empty = !$('#c-to').value.trim() && !$('#c-subject').value.trim() && $('#c-body').value.trim() === signatureFor(fromAccountId()).trim();
   if (c && c.dirty && !empty) {
     const choice = await choiceBox('Keep this message as a draft?', [
       { value: 'discard', label: 'Discard', cls: 'danger' }, { value: 'cancel', label: 'Keep editing' }, { value: 'save', label: 'Save draft', cls: 'primary' },
@@ -182,7 +250,7 @@ async function discardDraft(close = true) {
   if (!c) return;
   if (close && !(await confirmBox('Discard this message?', 'Discard', true))) return;
   try {
-    await invoke('discard_draft', { accountId: Number($('#c-from').value), draft: c.draft, localDraftId: c.local_draft_id });
+    await invoke('discard_draft', { accountId: fromAccountId(), draft: c.draft, localDraftId: c.local_draft_id });
   } catch (e) { toast(errText(e), 'error'); }
   if (close) {
     clearTimeout(c.timer);
@@ -193,6 +261,13 @@ async function discardDraft(close = true) {
   }
 }
 
+/** Where large attachments go as links: S3 when set up for links, else Nextcloud, else nowhere. */
+function linkProvider() {
+  if (S.s3?.enabled && S.s3.links) return { name: 'cloud storage (S3)', threshold: S.s3.link_threshold_mb };
+  if (S.nc?.enabled) return { name: 'Nextcloud', threshold: S.nc.link_threshold_mb };
+  return null;
+}
+
 async function sendCompose() {
   const btn = $('#c-send');
   const c = S.compose;
@@ -200,13 +275,14 @@ async function sendCompose() {
   let draft = composePayload();
   if (!draft.to.trim() && !draft.cc.trim() && !draft.bcc.trim()) { toast('Add at least one recipient', 'error'); $('#c-to').focus(); return; }
   if (!draft.subject.trim() && !(await confirmBox('Send without a subject?', 'Send'))) return;
-  if (S.nc.enabled && draft.attachments.length) {
+  const linkVia = linkProvider();
+  if (linkVia && draft.attachments.length) {
     const sizes = await invoke('file_sizes', { paths: draft.attachments }).catch(() => []);
-    const limit = (S.nc.link_threshold_mb || 10) * 1048576;
+    const limit = (linkVia.threshold || 10) * 1048576;
     const big = sizes.filter((n) => n >= limit);
     if (big.length) {
       const mb = (big.reduce((a, b) => a + b, 0) / 1048576).toFixed(1);
-      const choice = await choiceBox(`${big.length} attachment${big.length > 1 ? 's are' : ' is'} large (${mb} MB). Many mail servers reject big emails.\nUpload ${big.length > 1 ? 'them' : 'it'} to Nextcloud and send a download link instead?`,
+      const choice = await choiceBox(`${big.length} attachment${big.length > 1 ? 's are' : ' is'} large (${mb} MB). Many mail servers reject big emails.\nUpload ${big.length > 1 ? 'them' : 'it'} to ${linkVia.name} and send a download link instead?`,
         [{ value: 'cancel', label: 'Cancel' }, { value: 'attach', label: 'Attach anyway' }, { value: 'link', label: 'Send as link', cls: 'primary' }], 'Large attachments');
       if (choice === 'cancel' || choice === null) return;
       draft.link_large = choice === 'link';
@@ -220,7 +296,7 @@ async function sendCompose() {
       await c.savePromise;
       draft = { ...composePayload(), link_large: draft.link_large };
     }
-    await withBusy(draft.link_large ? 'Uploading to Nextcloud & sending…' : 'Sending…', () => invoke('send_message', { draft }));
+    await withBusy(draft.link_large ? `Uploading to ${linkVia.name} & sending…` : 'Sending…', () => invoke('send_message', { draft }));
     $('#compose').close();
     S.compose = null;
     dropLayer('compose');
@@ -240,10 +316,11 @@ async function recoverDrafts() {
     const list = await invoke('pending_drafts');
     if (!list.length) return;
     toast(`${list.length} unsent draft${list.length > 1 ? 's' : ''} recovered`, 'info', {
-      label: 'Open', run: () => {
+      label: 'Open', run: async () => {
         const d = list[0];
-        openCompose({ mode: 'draft', accountId: d.account_id, to: d.to, cc: d.cc, bcc: d.bcc, subject: d.subject, body: d.body,
-          localId: d.local_draft_id, messageId: d.message_id, in_reply_to: d.in_reply_to, references: d.references });
+        await openCompose({ mode: 'draft', accountId: d.account_id, to: d.to, cc: d.cc, bcc: d.bcc, subject: d.subject, body: d.body,
+          localId: d.local_draft_id, messageId: d.message_id, in_reply_to: d.in_reply_to, references: d.references,
+          fromEmail: d.from_email, receipt: d.request_receipt });
         S.compose.files = d.attachments || [];
         S.compose.dirty = true;
         renderComposeFiles();
@@ -372,6 +449,7 @@ $('#c-attach').onclick = async () => {
   } catch (e) { toast(errText(e), 'error'); }
 };
 $('#c-from').addEventListener('change', markDirty);
+$('#c-receipt').addEventListener('change', markDirty);
 for (const id of ['#c-to', '#c-cc', '#c-bcc', '#c-subject', '#c-body']) $(id).addEventListener('input', markDirty);
 $('#compose').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendCompose(); }

@@ -116,6 +116,42 @@ pub async fn add_account(app: AppHandle, state: State<'_, Shared>, input: NewAcc
     .await
 }
 
+/// Edits an account. For IMAP accounts, changed server details or a new password are tested
+/// before anything is saved.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)] // one argument per form field (Tauri command)
+pub async fn update_account(state: State<'_, Shared>, account_id: i64, name: String, imap_host: String, imap_port: u16,
+                            smtp_host: String, smtp_port: u16, smtp_security: String, username: String, password: String,
+                            save_sent: bool) -> Result<Account, String> {
+    let st = state.inner().clone();
+    blocking(move || {
+        let old = st.db.account(account_id)?;
+        let mut a = old.clone();
+        a.name = name.trim().to_string();
+        a.save_sent = save_sent;
+        if !a.is_oauth() {
+            a.imap_host = imap_host.trim().to_string();
+            a.imap_port = imap_port;
+            a.smtp_host = smtp_host.trim().to_string();
+            a.smtp_port = smtp_port;
+            a.smtp_security = smtp_security;
+            a.username = username.trim().to_string();
+            let server_changed = a.imap_host != old.imap_host || a.imap_port != old.imap_port || a.username != old.username;
+            if server_changed || !password.is_empty() {
+                let pw = if password.is_empty() { secrets::get(&st.db, &secrets::password_key(a.id)).unwrap_or_default() } else { password.clone() };
+                connect(&a, &Auth::Password(pw))?.logout();
+            }
+            if !password.is_empty() {
+                secrets::set(&st.db, &secrets::password_key(a.id), &password)?;
+            }
+        }
+        st.db.update_account(&a)?;
+        st.forget_account(a.id); // reconnect with the new details
+        Ok(a)
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn reconnect_account(app: AppHandle, state: State<'_, Shared>, account_id: i64) -> Result<(), String> {
     let st = state.inner().clone();
@@ -183,6 +219,9 @@ pub async fn prefetch_bodies(state: State<'_, Shared>, account_id: i64, folder: 
     let st = state.inner().clone();
     blocking(move || {
         let acct = st.db.account(account_id)?;
+        if !st.db.account_prefs(account_id).offline_bodies {
+            return Ok(0);
+        }
         // Phones: fewer and smaller bodies to save mobile data and storage.
         if cfg!(mobile) { st.prefetch_bodies(&acct, &folder, 10, 512 * 1024) } else { st.prefetch_bodies(&acct, &folder, 25, 2_000_000) }
     })
@@ -685,4 +724,144 @@ pub async fn file_sizes(paths: Vec<String>) -> Result<Vec<u64>, String> {
 #[tauri::command]
 pub fn cancel_sign_in() {
     crate::oauth::CANCEL.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+// ============================================================ S3 storage
+
+#[tauri::command]
+pub async fn s3_get_config(state: State<'_, Shared>) -> Result<serde_json::Value, String> {
+    let mut v = serde_json::to_value(crate::s3::load(&state.db)).map_err(|e| e.to_string())?;
+    v["has_secret"] = secrets::get(&state.db, crate::s3::SECRET_KEY).is_some().into();
+    Ok(v)
+}
+
+/// Tests the bucket with these details and, if it works, saves them and enables S3.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)] // one argument per form field (Tauri command)
+pub async fn s3_connect(state: State<'_, Shared>, endpoint: String, region: String, bucket: String, access_key: String,
+                        secret_key: String, prefix: String, path_style: bool) -> Result<(), String> {
+    let st = state.inner().clone();
+    blocking(move || {
+        let mut cfg = crate::s3::load(&st.db);
+        cfg.endpoint = endpoint.trim().to_string();
+        cfg.region = region.trim().to_string();
+        cfg.bucket = bucket.trim().to_string();
+        cfg.access_key = access_key.trim().to_string();
+        cfg.prefix = prefix.trim().trim_matches('/').to_string();
+        cfg.path_style = path_style;
+        let secret = if secret_key.is_empty() { secrets::get(&st.db, crate::s3::SECRET_KEY).unwrap_or_default() } else { secret_key };
+        crate::s3::Client::new(&cfg, &secret)?.test()?;
+        secrets::set(&st.db, crate::s3::SECRET_KEY, &secret)?;
+        cfg.enabled = true;
+        cfg.last_error.clear();
+        crate::s3::save(&st.db, &cfg)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn s3_save_options(state: State<'_, Shared>, options: serde_json::Value) -> Result<(), String> {
+    let mut cfg = crate::s3::load(&state.db);
+    let get_b = |k: &str, d: bool| options.get(k).and_then(|v| v.as_bool()).unwrap_or(d);
+    let get_s = |k: &str, d: &str| options.get(k).and_then(|v| v.as_str()).map(String::from).unwrap_or_else(|| d.to_string());
+    let get_n = |k: &str, d: u32| options.get(k).and_then(|v| v.as_u64()).map(|n| n as u32).unwrap_or(d);
+    cfg.backup_schedule = get_s("backup_schedule", &cfg.backup_schedule);
+    cfg.backup_keep = get_n("backup_keep", cfg.backup_keep);
+    cfg.links = get_b("links", cfg.links);
+    cfg.link_threshold_mb = get_n("link_threshold_mb", cfg.link_threshold_mb).max(1);
+    cfg.link_expire_days = get_n("link_expire_days", cfg.link_expire_days).clamp(1, 7);
+    crate::s3::save(&state.db, &cfg)
+}
+
+#[tauri::command]
+pub async fn s3_disconnect(state: State<'_, Shared>) -> Result<(), String> {
+    let mut cfg = crate::s3::load(&state.db);
+    cfg.enabled = false;
+    secrets::delete(&state.db, crate::s3::SECRET_KEY);
+    crate::s3::save(&state.db, &cfg)
+}
+
+#[tauri::command]
+pub async fn s3_backup_now(app: AppHandle, state: State<'_, Shared>, account_id: i64) -> Result<String, String> {
+    let st = state.inner().clone();
+    blocking(move || {
+        use tauri::Emitter;
+        let acct = st.db.account(account_id)?;
+        let emitter = app.clone();
+        crate::push::backup_to_s3(&st, &acct, &|p| { let _ = emitter.emit("backup-progress", &p); })
+    })
+    .await
+}
+
+// ============================================================ spam, receipts, signature files
+
+#[tauri::command]
+pub async fn mark_spam(state: State<'_, Shared>, account_id: i64, folder: String, uids: Vec<u32>, spam: bool, action: String, mark_read: bool) -> Result<String, String> {
+    let st = state.inner().clone();
+    blocking(move || {
+        let acct = st.db.account(account_id)?;
+        st.mark_spam(&acct, &folder, &uids, spam, &action, mark_read)
+    })
+    .await
+}
+
+/// `send` = false records "don't ask again" without sending anything.
+#[tauri::command]
+pub async fn read_receipt(state: State<'_, Shared>, account_id: i64, folder: String, uid: u32, message_id: String, send: bool) -> Result<(), String> {
+    let st = state.inner().clone();
+    blocking(move || {
+        if !send {
+            let key = if message_id.is_empty() { format!("mdn-sent:{account_id}/{folder}/{uid}") } else { format!("mdn-sent:{message_id}") };
+            return st.db.set_setting(&key, "0");
+        }
+        let acct = st.db.account(account_id)?;
+        st.send_receipt(&acct, &folder, uid)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn receipt_done(state: State<'_, Shared>, message_id: String) -> Result<bool, String> {
+    Ok(state.receipt_done(&message_id))
+}
+
+/// Reads a signature file (.txt / .html, max 256 KB).
+#[tauri::command]
+pub async fn read_signature_file(path: String) -> Result<String, String> {
+    let meta = std::fs::metadata(&path).map_err(|e| crate::mail::friendly_io(&e, "signature file"))?;
+    if meta.len() > 256 * 1024 {
+        return Err("The signature file is larger than 256 KB".into());
+    }
+    let bytes = std::fs::read(&path).map_err(|e| crate::mail::friendly_io(&e, "signature file"))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Lets the user pick a file (signature file, notification sound). Returns the path or None.
+#[tauri::command]
+pub async fn pick_one_file(app: AppHandle, title: String, extensions: Vec<String>) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    blocking(move || {
+        let mut d = app.dialog().file().set_title(&title);
+        if !extensions.is_empty() {
+            let exts: Vec<&str> = extensions.iter().map(String::as_str).collect();
+            d = d.add_filter("Files", &exts);
+        }
+        Ok(d.blocking_pick_file().and_then(|f| f.into_path().ok()).map(|p| p.to_string_lossy().into_owned()))
+    })
+    .await
+}
+
+/// Returns a small file (≤ 2 MB) as a data: URL – used to play a custom notification sound.
+#[tauri::command]
+pub async fn file_data_url(path: String) -> Result<String, String> {
+    use base64::Engine;
+    let meta = std::fs::metadata(&path).map_err(|e| crate::mail::friendly_io(&e, "sound file"))?;
+    if meta.len() > 2 * 1024 * 1024 {
+        return Err("The sound file is larger than 2 MB".into());
+    }
+    let bytes = std::fs::read(&path).map_err(|e| crate::mail::friendly_io(&e, "sound file"))?;
+    let mime = match path.rsplit('.').next().unwrap_or("").to_ascii_lowercase().as_str() {
+        "mp3" => "audio/mpeg", "ogg" | "oga" => "audio/ogg", "wav" => "audio/wav", "m4a" => "audio/mp4", "flac" => "audio/flac", _ => "application/octet-stream",
+    };
+    Ok(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
 }

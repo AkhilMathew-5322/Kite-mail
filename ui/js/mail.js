@@ -21,9 +21,10 @@ function renderSidebar() {
     box.className = 'account';
     const err = S.errors[a.id];
     const collapsed = !phone && S.collapsed[a.id];
+    box.style.setProperty('--c', acctColor(a));
     box.innerHTML = `<div class="acct-head" title="${esc(err || a.email)}">
         ${avatar(a.name, a.email, 26)}
-        <div class="acct-names"><b>${esc(a.name || a.email)}</b><small>${esc(a.email)}</small></div>
+        <div class="acct-names"><b>${esc(aprefs(a.id).label || a.name || a.email)}</b><small>${esc(a.email)}</small></div>
         ${err ? `<span class="warn" title="${esc(err)}">${icon('junk', 16)}</span>` : ''}
         ${phone ? `<span class="switch-hint">${icon('chevrons', 16)}</span>` : `<span class="chev ${collapsed ? '' : 'open'}">${icon('back', 14)}</span>`}
       </div>
@@ -65,7 +66,7 @@ function renderAccountChip() {
   const a = S.cur && acct(S.cur.accountId);
   chip.hidden = !a;
   if (!a) return;
-  document.documentElement.style.setProperty('--acct-hue', hueOf(a.email));
+  document.documentElement.style.setProperty('--acct-color', acctColor(a));
   const others = S.accounts.some((x) => x.id !== a.id && inboxUnread(x.id) > 0);
   const html = `${avatar(a.name, a.email, 32)}${others ? '<span class="dot" title="New mail in another account"></span>' : ''}`;
   if (chip.innerHTML !== html) chip.innerHTML = html;
@@ -77,9 +78,9 @@ function openAccountSheet() {
   if (d.open) return;
   const items = S.accounts.map((a) => {
     const n = inboxUnread(a.id), cur = S.cur?.accountId === a.id, err = S.errors[a.id];
-    return `<button class="acct-item${cur ? ' current' : ''}" data-id="${a.id}" style="--h:${hueOf(a.email)}">
+    return `<button class="acct-item${cur ? ' current' : ''}" data-id="${a.id}" style="--c:${acctColor(a)}">
       ${avatar(a.name, a.email, 42)}
-      <span class="acct-names"><b>${esc(a.name || a.email)}</b><small>${esc(err ? 'Needs attention – ' + err : a.email)}</small></span>
+      <span class="acct-names"><b>${esc(aprefs(a.id).label || a.name || a.email)}</b><small>${esc(err ? 'Needs attention – ' + err : a.email)}</small></span>
       ${n ? `<span class="count">${n > 99 ? '99+' : n}</span>` : ''}
       ${cur ? `<span class="tick">${icon('check', 18)}</span>` : ''}
     </button>`;
@@ -212,7 +213,8 @@ async function removeAccount(accountId) {
 }
 
 function openFirstInbox() {
-  for (const a of S.accounts) {
+  const def = S.accounts.find((a) => a.id === S.settings.default_account);
+  for (const a of def ? [def, ...S.accounts.filter((x) => x !== def)] : S.accounts) {
     const inbox = (S.folders[a.id] || []).find((f) => f.special === 'inbox');
     if (inbox) return selectFolder(a.id, inbox.name);
   }
@@ -435,6 +437,12 @@ function showReader(view) {
   $('#r-add-contact').hidden = !!c;
   $('#r-call').hidden = !(c && c.phone);
   $('[data-act=star]').classList.toggle('on', s.flagged);
+  const inJunk = folderOf(s.account_id, s.folder)?.special === 'junk';
+  const sb = $('[data-act=spam]');
+  sb.title = inJunk ? 'Not spam – move to Inbox (J)' : 'Mark as spam (J)';
+  sb.classList.toggle('on', inJunk);
+  $('#r-scam').hidden = true;
+  showReceiptPrompt(view);
 
   const atts = $('#r-attachments');
   atts.innerHTML = '';
@@ -485,6 +493,8 @@ function renderBody() {
     fit();
     setTimeout(fit, 300);
     d.querySelectorAll('img').forEach((img) => img.addEventListener('load', fit));
+    const scams = S.settings.scam_warn ? scanForScam(d, v) : [];
+    showScamWarning(scams);
     d.addEventListener('click', (e) => {
       const a = e.target.closest && e.target.closest('a[href]');
       if (!a) return;
@@ -497,11 +507,85 @@ function renderBody() {
       } else if (/^(tel|callto|sip):/i.test(href)) {
         invoke('call_number', { number: decodeURIComponent(href.replace(/^[a-z]+:/i, '')) }).catch((err) => toast(errText(err), 'error'));
       } else if (/^https?:/i.test(href)) {
+        const bad = scams.find((x) => x.el === a);
+        if (bad) {
+          confirmBox(`This link may be a scam: ${bad.why}.\n\nIt really goes to:\n${href}`, 'Open anyway', true).then((ok) => {
+            if (ok) invoke('open_url', { url: href }).catch((err) => toast(errText(err), 'error'));
+          });
+          return;
+        }
         invoke('open_url', { url: href }).catch((err) => toast(errText(err), 'error'));
       }
     });
   };
   frame.srcdoc = doc;
+}
+
+// ------------------------------------------------------------------ scam detection
+const hostOf = (u) => { try { return new URL(u).hostname.toLowerCase().replace(/^www\./, ''); } catch (_) { return ''; } };
+/** Last two labels (three for co.uk-style) – enough to compare "paypal.com" with "paypal.com.evil.io". */
+function siteOf(host) {
+  const p = host.split('.');
+  return p.slice(p.length > 2 && p[p.length - 2].length <= 3 && p[p.length - 1].length === 2 ? -3 : -2).join('.');
+}
+
+/** Returns suspicious links: [{ el, why }]. */
+function scanForScam(doc, view) {
+  const out = [];
+  for (const a of doc.querySelectorAll('a[href]')) {
+    const href = a.getAttribute('href').trim();
+    if (!/^https?:/i.test(href)) continue;
+    const host = hostOf(href);
+    if (!host) continue;
+    const text = (a.textContent || '').trim();
+    const shown = /^(https?:\/\/)?([a-z0-9-]+\.)+[a-z]{2,}(\/|$)/i.exec(text.replace(/\s+/g, ''));
+    if (shown) {
+      const shownHost = hostOf(/^https?:/i.test(shown[0]) ? shown[0] : 'https://' + shown[0]);
+      if (shownHost && siteOf(shownHost) !== siteOf(host)) { out.push({ el: a, why: `the text shows ${shownHost} but it goes to ${host}` }); continue; }
+    }
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.startsWith('[')) { out.push({ el: a, why: `it points to a bare IP address (${host}) instead of a website name` }); continue; }
+    if (host.split('.').some((l) => l.startsWith('xn--'))) { out.push({ el: a, why: `${host} uses look-alike international letters` }); continue; }
+    if (/@/.test(href.replace(/^https?:\/\//i, '').split('/')[0])) { out.push({ el: a, why: 'the address hides its real destination after an "@"' }); }
+  }
+  // sender name pretending to be an address on another domain ("support@bank.com" <x@evil.io>)
+  const s = view.summary;
+  const named = /[a-z0-9._%+-]+@([a-z0-9-]+\.)+[a-z]{2,}/i.exec(s.from_name || '');
+  if (named && siteOf(named[0].split('@')[1].toLowerCase()) !== siteOf((s.from_addr.split('@')[1] || '').toLowerCase())) {
+    out.push({ el: null, why: `the sender's name shows ${named[0]} but the mail really comes from ${s.from_addr}` });
+  }
+  return out;
+}
+
+function showScamWarning(list) {
+  const bar = $('#r-scam');
+  bar.hidden = !list.length;
+  if (!list.length) return;
+  bar.innerHTML = `${icon('shield', 18)}<div><b>This message may be a scam.</b> Don't enter passwords or payment details from its links.
+    <ul>${[...new Set(list.map((x) => x.why))].slice(0, 4).map((w) => `<li>${esc(w)}</li>`).join('')}</ul></div>`;
+  for (const x of list) if (x.el) { x.el.style.outline = '2px solid #e5484d'; x.el.title = 'Suspicious link: ' + x.why; }
+}
+
+// ------------------------------------------------------------------ read receipts
+async function showReceiptPrompt(view) {
+  const bar = $('#r-receipt');
+  bar.hidden = true;
+  const s = view.summary;
+  if (!view.mdn_to || S.settings.receipts_reply === 'never') return;
+  if (S.accounts.some((a) => view.summary.from_addr.toLowerCase() === a.email.toLowerCase())) return; // our own mail
+  if (await invoke('receipt_done', { messageId: view.message_id }).catch(() => true)) return;
+  if (S.view !== view) return;
+  const send = async (yes) => {
+    bar.hidden = true;
+    try {
+      await invoke('read_receipt', { accountId: s.account_id, folder: s.folder, uid: s.uid, messageId: view.message_id, send: yes });
+      if (yes) toast('Read receipt sent', 'ok');
+    } catch (e) { toast(errText(e), 'error'); }
+  };
+  if (S.settings.receipts_reply === 'always') return send(true);
+  bar.innerHTML = `${icon('check', 16)}<span class="grow"><b>${esc(s.from_name || s.from_addr)}</b> asked to be notified when you read this message.</span>
+    <button class="ghost" data-r="no">Ignore</button><button class="primary" data-r="yes">Send receipt</button>`;
+  bar.hidden = false;
+  bar.onclick = (e) => { const b = e.target.closest('[data-r]'); if (b) send(b.dataset.r === 'yes'); };
 }
 
 /** Readable plain text of the open message (from the rendered HTML: keeps line breaks / table rows). */
@@ -579,6 +663,16 @@ const deleteMessages = (list) => removeFromList(list, (g) =>
 const moveMessages = (list, target) => removeFromList(list, (g) =>
   invoke('move_messages', { accountId: g[0].account_id, folder: g[0].folder, uids: g.map((m) => m.uid), target }),
   (n) => `Moved to ${folderName(list[0].account_id, target)}`);
+/** Spam: Junk folder (or delete) – in the Junk folder it's "Not spam" and goes back to the Inbox. */
+const spamMessages = (list) => {
+  if (!list.length) return;
+  const inJunk = folderOf(list[0].account_id, list[0].folder)?.special === 'junk';
+  const st = S.settings;
+  return removeFromList(list, (g) =>
+    invoke('mark_spam', { accountId: g[0].account_id, folder: g[0].folder, uids: g.map((m) => m.uid), spam: !inJunk, action: st.spam_action, markRead: st.spam_mark_read }),
+    (n) => inJunk ? `${n > 1 ? n + ' messages' : 'Message'} moved to the Inbox` : st.spam_action === 'delete' ? `${n > 1 ? n + ' messages' : 'Message'} deleted as spam` : `${n > 1 ? n + ' messages' : 'Message'} moved to Junk`);
+};
+
 const archiveMessages = (list) => {
   if (list.length && folderOf(list[0].account_id, list[0].folder)?.special === 'archive') { toast('Already in Archive'); return; }
   return removeFromList(list, (g) =>
@@ -624,6 +718,7 @@ $('.reader-bar').addEventListener('click', async (e) => {
   if (act === 'star') toggleFlag(list, !S.view.summary.flagged);
   if (act === 'delete') deleteMessages(list);
   if (act === 'archive') archiveMessages(list);
+  if (act === 'spam') spamMessages(list);
   if (act === 'task') quickTaskFromMail(S.view, b);
   if (act === 'move') {
     const t = await chooseMoveTarget(b, S.view.summary.account_id, S.view.summary.folder);
