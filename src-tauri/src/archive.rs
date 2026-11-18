@@ -1129,7 +1129,7 @@ mod tests {
         for sub in ["md/cur", "md/new", "md/tmp", "md/.Projects.TLR/cur", "md/.Projects.TLR/new"] {
             std::fs::create_dir_all(dir.join(sub)).unwrap();
         }
-        std::fs::write(dir.join("md/cur/1:2,S"), eml("Court hearing moved", "c1@x", "Thursday 10am")).unwrap();
+        std::fs::write(dir.join("md/cur/1700000000.M1P1.host"), eml("Court hearing moved", "c1@x", "Thursday 10am")).unwrap();
         std::fs::write(dir.join("md/.Projects.TLR/new/2"), eml("TLR website launch", "t1@x", "launch checklist")).unwrap();
         std::fs::write(dir.join("notes.docx"), b"not mail").unwrap();
 

@@ -947,8 +947,15 @@ pub async fn archive_import(app: AppHandle, ar: ArchiveState<'_>, kind: String) 
     blocking(move || {
         use tauri::Emitter;
         let picked: Vec<std::path::PathBuf> = if kind == "folder" {
-            app.dialog().file().set_title("Import a mail folder (Maildir, or a folder of .eml / .msg / .mbox / .pst files)")
-                .blocking_pick_folder().and_then(|f| f.into_path().ok()).into_iter().collect()
+            #[cfg(desktop)]
+            {
+                app.dialog().file().set_title("Import a mail folder (Maildir, or a folder of .eml / .msg / .mbox / .pst files)")
+                    .blocking_pick_folder().and_then(|f| f.into_path().ok()).into_iter().collect()
+            }
+            #[cfg(mobile)]
+            {
+                return Err("On phones, choose the files to import (folders can be imported on the computer)".into());
+            }
         } else {
             app.dialog().file().set_title("Import mail files")
                 .add_filter("Mail files", &["pst", "msg", "eml", "emlx", "mbox", "mbx", "zip"])

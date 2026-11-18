@@ -17,6 +17,7 @@ const AV = {
 const AV_PAGE = 200;
 
 async function loadArchives() {
+  $('#av-import-folder').hidden = !!S.mobile;   // phones: pick files (no folder picker)
   try { AV.archives = await invoke('archive_list'); } catch (e) { toast(errText(e), 'error'); AV.archives = []; }
   renderArchiveTree();
 }
