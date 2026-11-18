@@ -9,6 +9,7 @@ function switchTab(tab) {
   if (tab === 'contacts') { loadContacts().then(() => { S.contactsView = S.contacts; renderContactList(); renderContactDetail(); }); }
   if (tab === 'tasks') { loadTodos().then(renderTasks); }
   if (tab === 'settings') renderSettings();
+  if (tab === 'archive') loadArchives();
   if (tab === 'mail') requestAnimationFrame(() => renderVisible(true));
 }
 
@@ -75,6 +76,11 @@ listen('todos-updated', async () => {
   if (S.tab === 'tasks') renderTasks();
 });
 listen('backup-progress', ({ payload }) => onBackupProgress(payload));
+listen('archive-progress', ({ payload }) => onArchiveProgress(payload));
+listen('files-updated', ({ payload }) => {
+  reloadFolders(payload.account_id);
+  if (isFilesView() && S.cur.accountId === payload.account_id) syncCurrent(true);
+});
 listen('new-mail', () => { if (S.settings.notify_mail) playNotifySound(); });
 listen('s3-error', async ({ payload }) => { await loadS3(); toast(String(payload), 'error'); if (S.tab === 'settings') renderSettings(); });
 listen('nc-synced', async ({ payload }) => {

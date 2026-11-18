@@ -2,7 +2,7 @@
 /* Mail view: accounts & folders sidebar, virtualized message list, reader, message actions. */
 
 const PAGE = 100;
-const FOLDER_ICON = { inbox: 'inbox', drafts: 'draft', sent: 'send', trash: 'trash', junk: 'junk', archive: 'archive', all: 'all', '': 'folder' };
+const FOLDER_ICON = { files: 'files', inbox: 'inbox', drafts: 'draft', sent: 'send', trash: 'trash', junk: 'junk', archive: 'archive', all: 'all', '': 'folder' };
 const NO_COUNT = new Set(['sent', 'drafts', 'trash', 'junk', 'all']);
 const key = (m) => `${m.account_id}|${m.folder}|${m.uid}`;
 const curKey = () => (S.cur ? `${S.cur.accountId}|${S.cur.folder}` : '');
@@ -221,6 +221,24 @@ function openFirstInbox() {
 }
 
 // ------------------------------------------------------------------ list
+/** Rows of the list: one per conversation (newest message first) when conversations are on. */
+function listGroups() {
+  if (!S.settings.threads || S.searching) return S.messages.map((m) => ({ m, members: [m] }));
+  const byThread = new Map();
+  const out = [];
+  for (const m of S.messages) {             // S.messages is newest first
+    const t = m.thread || key(m);
+    const g = byThread.get(t);
+    if (g) { g.members.push(m); continue; }
+    const row = { m, members: [m] };
+    byThread.set(t, row);
+    out.push(row);
+  }
+  return out;
+}
+
+/** The messages a list row stands for (a whole conversation in this folder). */
+const rowMembers = (m) => S.threadMembers?.get(key(m)) || [m];
 async function selectFolder(accountId, folder) {
   S.cur = { accountId, folder };
   S.lastFolder[accountId] = folder;
@@ -269,16 +287,27 @@ const rowH = () => (S.settings.density === 'compact' ? 50 : 78);
 
 function renderList() {
   const a = S.cur && acct(S.cur.accountId);
+  const filesView = isFilesView();
+  $('#app').classList.toggle('files-mode', filesView);
+  $('#messages').hidden = filesView;
+  $('#files-view').hidden = !filesView;
+  if (filesView) {
+    $('#list-title').innerHTML = `<b>Files</b> <span class="muted">${esc(a?.email || '')}</span>`;
+    $('#list-footer').innerHTML = '';
+    updateBulk();
+    return renderFilesGrid();
+  }
   $('#list-title').innerHTML = S.searching
     ? `<b>${S.searchServer ? 'Server results' : 'Search results'}</b> <span class="muted">${S.messages.length}</span>`
     : S.cur ? `<b>${esc(folderName(S.cur.accountId, S.cur.folder))}</b> <span class="muted">${esc(a?.email || '')}</span>` : '';
   ROWS = []; OFFS = [];
   let y = 0, last = null;
-  const groups = !S.searching || true;
-  for (const m of S.messages) {
+  S.threadMembers = new Map();
+  for (const { m, members } of listGroups()) {
     const g = dayGroup(m.date);
-    if (groups && g !== last) { ROWS.push({ h: g }); OFFS.push(y); y += HEAD_H; last = g; }
-    ROWS.push({ m }); OFFS.push(y); y += rowH();
+    if (g !== last) { ROWS.push({ h: g }); OFFS.push(y); y += HEAD_H; last = g; }
+    if (members.length > 1) S.threadMembers.set(key(m), members);
+    ROWS.push({ m, members }); OFFS.push(y); y += rowH();
   }
   $('#msg-spacer').style.height = y + 'px';
   renderVisible(true);
@@ -324,27 +353,30 @@ function renderVisible(force = false) {
     const r = ROWS[i];
     if (r.h) { html += `<div class="day-head" style="top:${OFFS[i]}px">${esc(r.h)}</div>`; continue; }
     const m = r.m;
+    const mem = r.members || [m];
     const sp = folderOf(m.account_id, m.folder)?.special;
     const sentLike = sp === 'sent' || sp === 'drafts';
-    const who = sentLike ? (m.to ? 'To: ' + m.to : '(no recipient)') : (m.from_name || m.from_addr || '(unknown)');
+    const names = [...new Set(mem.slice().reverse().map((x) => (x.from_name || x.from_addr || '').split(' ')[0]).filter(Boolean))];
+    const who = sentLike ? (m.to ? 'To: ' + m.to : '(no recipient)') : mem.length > 1 ? names.slice(-3).join(', ') : (m.from_name || m.from_addr || '(unknown)');
+    const unread = mem.some((x) => !x.seen), flagged = mem.some((x) => x.flagged), attach = mem.some((x) => x.has_attach);
     const firstTo = splitAddrs(m.to || '')[0] || '';
     const toName = firstTo.replace(/<[^>]*>/, '').replace(/"/g, '').trim();
     const k = key(m);
-    html += `<div class="msg${m.seen ? '' : ' unread'}${S.selected.has(k) ? ' selected' : ''}${m.flagged ? ' flagged' : ''}" data-key="${esc(k)}" style="top:${OFFS[i]}px;height:${rowH()}px">
+    html += `<div class="msg${unread ? ' unread' : ''}${S.selected.has(k) ? ' selected' : ''}${flagged ? ' flagged' : ''}" data-key="${esc(k)}" style="top:${OFFS[i]}px;height:${rowH()}px">
       ${compact ? '' : avatar(sentLike ? toName : m.from_name, sentLike ? bareAddr(firstTo) : m.from_addr, 36)}
       <div class="m-main">
-        <div class="m-top"><span class="from">${esc(who)}</span><span class="date">${fmtDate(m.date)}</span></div>
+        <div class="m-top"><span class="from">${esc(who)}</span>${mem.length > 1 ? `<span class="thread-n" title="${mem.length} messages in this conversation">${mem.length}</span>` : ''}<span class="date">${fmtDate(m.date)}</span></div>
         <div class="m-subj">${m.answered ? `<span class="m-ic">${icon('reply', 13)}</span>` : ''}${esc(m.subject || '(no subject)')}${S.searching ? ` <span class="folder-tag">${esc(folderName(m.account_id, m.folder))}</span>` : ''}</div>
         ${compact ? '' : `<div class="m-prev">${esc(m.preview || '')}</div>`}
       </div>
       <div class="m-side">
-        ${m.has_attach ? `<span class="m-ic">${icon('clip', 14)}</span>` : ''}
-        <button class="star-btn ${m.flagged ? 'on' : ''}" data-q="star" title="Star">${icon('star', 15)}</button>
+        ${attach ? `<span class="m-ic">${icon('clip', 14)}</span>` : ''}
+        <button class="star-btn ${flagged ? 'on' : ''}" data-q="star" title="Star">${icon('star', 15)}</button>
       </div>
       <div class="m-hover">
         <button data-q="archive" title="Archive">${icon('archive', 16)}</button>
         <button data-q="delete" title="Delete">${icon('trash', 16)}</button>
-        <button data-q="read" title="${m.seen ? 'Mark unread' : 'Mark read'}">${icon(m.seen ? 'unread' : 'mail', 16)}</button>
+        <button data-q="read" title="${unread ? 'Mark read' : 'Mark unread'}">${icon(unread ? 'mail' : 'unread', 16)}</button>
       </div>
     </div>`;
   }
@@ -361,10 +393,11 @@ function onListClick(e) {
   const q = e.target.closest('[data-q]')?.dataset.q;
   if (q) {
     e.stopPropagation();
-    if (q === 'star') toggleFlag([m], !m.flagged);
-    if (q === 'archive') archiveMessages([m]);
-    if (q === 'delete') deleteMessages([m]);
-    if (q === 'read') setSeen([m], !m.seen);
+    const mem = rowMembers(m);
+    if (q === 'star') toggleFlag([m], !mem.some((x) => x.flagged));
+    if (q === 'archive') archiveMessages(mem);
+    if (q === 'delete') deleteMessages(mem);
+    if (q === 'read') setSeen(mem, mem.every((x) => x.seen) ? false : true);
     return;
   }
   const k = key(m);
@@ -392,16 +425,21 @@ function updateBulk() {
 }
 
 function selectedMessages() {
-  const sel = S.messages.filter((m) => S.selected.has(key(m)));
-  if (sel.length) return sel;
-  return S.view ? S.messages.filter((m) => key(m) === key(S.view.summary)) : [];
+  const sel = S.messages.filter((m) => S.selected.has(key(m))).flatMap(rowMembers);
+  if (sel.length) return [...new Set(sel)];
+  if (!S.view) return [];
+  const open = S.messages.find((m) => key(m) === key(S.view.summary));
+  return open ? rowMembers(open) : [];
 }
 
 // ------------------------------------------------------------------ reader
-async function openMessage(m) {
+async function openMessage(m, fromConversation = false) {
   try {
     const view = await withBusy('Loading…', () => invoke('open_message', { accountId: m.account_id, folder: m.folder, uid: m.uid }));
-    if (!S.selected.has(key(m))) return;
+    if (!fromConversation && !S.selected.has(key(m))) return;
+    // opening a conversation reads all of it
+    const others = rowMembers(m).filter((x) => x !== m && !x.seen);
+    if (others.length) setSeen(others, true);
     if (!m.seen) {
       m.seen = true;
       const f = folderOf(m.account_id, m.folder);
@@ -410,9 +448,40 @@ async function openMessage(m) {
     }
     S.allowRemote = S.settings.remote_images === 'always';
     showReader(view);
+    loadConversation(view);
     if ($('#app').classList.contains('narrow') && !$('#app').classList.contains('reading')) pushLayer('reader', () => $('#app').classList.remove('reading'));
     $('#app').classList.add('reading');
   } catch (e) { toast(errText(e), 'error'); }
+}
+
+/** The whole conversation (Inbox, Sent, Archive…) in order, above the open message. */
+async function loadConversation(view) {
+  const box = $('#r-thread');
+  box.hidden = true;
+  box.innerHTML = '';
+  const t = view.summary.thread;
+  if (!S.settings.threads || !t || !view.summary.account_id) return;
+  let list;
+  try { list = await invoke('conversation', { accountId: view.summary.account_id, thread: t }); } catch (_) { return; }
+  if (S.view !== view || list.length < 2) return;
+  const me = new Set(S.accounts.map((a) => a.email.toLowerCase()));
+  box.innerHTML = `<div class="th-head">${icon('reply_all', 15)} ${list.length} messages in this conversation</div>` + list.map((m) => {
+    const cur = m.folder === view.summary.folder && m.uid === view.summary.uid;
+    const mine = me.has((m.from_addr || '').toLowerCase());
+    const sp = folderOf(m.account_id, m.folder)?.special;
+    return `<div class="th-item${cur ? ' current' : ''}${mine ? ' mine' : ''}" data-folder="${esc(m.folder)}" data-uid="${m.uid}">
+      ${avatar(m.from_name, m.from_addr, 28)}
+      <div class="th-body"><div class="th-top"><b>${esc(mine ? 'You' : (m.from_name || m.from_addr))}</b>${sp && sp !== 'inbox' ? `<span class="folder-tag">${esc(folderName(m.account_id, m.folder))}</span>` : ''}<small>${fmtDate(m.date, true)}</small></div>
+        <div class="th-prev">${cur ? '<i>Open below</i>' : esc(m.preview || m.subject || '')}</div></div>
+    </div>`;
+  }).join('');
+  box.hidden = false;
+  box.onclick = (e) => {
+    const it = e.target.closest('.th-item');
+    if (!it || it.classList.contains('current')) return;
+    const m = list.find((x) => x.folder === it.dataset.folder && String(x.uid) === it.dataset.uid);
+    if (m) openMessage(m, true);
+  };
 }
 
 function contactFor(addr) {
@@ -424,7 +493,7 @@ function showReader(view) {
   S.view = view;
   $('#reader-empty').hidden = !!view;
   $('#reader-content').hidden = !view;
-  if (!view) { $('#r-body').srcdoc = ''; $('#app').classList.remove('reading'); return; }
+  if (!view) { $('#r-body').srcdoc = ''; $('#r-thread').hidden = true; $('#app').classList.remove('reading'); return; }
   const s = view.summary;
   $('#r-subject').textContent = s.subject || '(no subject)';
   $('#r-from').textContent = s.from_name || s.from_addr;
@@ -452,10 +521,13 @@ function showReader(view) {
     chip.className = 'att' + (risky ? ' risky' : '');
     const ext = (a.name.split('.').pop() || '').slice(0, 4).toUpperCase();
     chip.innerHTML = `<span class="att-ext">${risky ? icon('shield', 14) : esc(ext)}</span><span class="att-name" title="${risky ? 'Program or macro file – it can only be saved, not opened from here' : 'Open ' + esc(a.name)}">${esc(a.name)}<small>${risky ? 'Can run code · ' : ''}${fmtSize(a.size)}</small></span>
-      <button class="icon" title="Save as…">${icon('download', 16)}</button>`;
+      <button class="icon" data-save title="Save as…">${icon('download', 16)}</button>
+      ${folderOf(s.account_id, s.folder)?.special === 'files' ? '' : `<button class="icon" data-tofiles title="Save to the Files folder (syncs to all devices)">${icon('files', 16)}</button>`}`;
     const args = { accountId: s.account_id, folder: s.folder, uid: s.uid, index: a.index };
+    const tf = $('[data-tofiles]', chip);
+    if (tf) tf.onclick = () => saveToFiles([a.index]);
     $('.att-name', chip).onclick = () => invoke('open_attachment', args).catch((e) => toast(errText(e), 'error'));
-    $('button', chip).onclick = () => invoke('save_attachment', args).then((ok) => ok && toast('Saved', 'ok')).catch((e) => toast(errText(e), 'error'));
+    $('[data-save]', chip).onclick = () => invoke('save_attachment', args).then((ok) => ok && toast('Saved', 'ok')).catch((e) => toast(errText(e), 'error'));
     atts.appendChild(chip);
   }
   $('.reader-scroll').scrollTop = 0;
@@ -476,7 +548,13 @@ function renderBody() {
   const v = S.view;
   if (!v) return;
   $('#r-remote').hidden = !(v.has_remote && !S.allowRemote);
-  const imgSrc = S.allowRemote ? 'data: https: http:' : 'data:';
+  renderMailFrame($('#r-body'), v, S.allowRemote, showScamWarning);
+}
+
+/** Renders a message body into a sandboxed iframe (CSP, remote-image blocking, scam checks,
+ *  safe link handling). Shared by the mail reader and the archive reader. */
+function renderMailFrame(frame, v, allowRemote, onScams) {
+  const imgSrc = allowRemote ? 'data: https: http:' : 'data:';
   const darkify = S.settings.dark_emails && document.documentElement.dataset.dark === '1';
   const body = v.html ? cleanEmailHtml(v.html) : `<pre style="white-space:pre-wrap;font-family:inherit;margin:0">${esc(v.text)}</pre>`;
   const doc = `<!doctype html><html><head><meta charset="utf-8">
@@ -485,7 +563,6 @@ function renderBody() {
     img{max-width:100%;height:auto}blockquote{border-left:3px solid #ccd;margin:0 0 0 4px;padding-left:12px;color:#555}a{color:#3b5bdb}
     ${darkify ? 'html{filter:invert(.92) hue-rotate(180deg)}img,video,picture,[style*="background-image"]{filter:invert(1) hue-rotate(180deg)}' : ''}</style>
     </head><body>${body}</body></html>`;
-  const frame = $('#r-body');
   frame.parentElement.classList.toggle('darkified', darkify);
   frame.onload = () => {
     const d = frame.contentDocument;
@@ -495,7 +572,7 @@ function renderBody() {
     setTimeout(fit, 300);
     d.querySelectorAll('img').forEach((img) => img.addEventListener('load', fit));
     const scams = S.settings.scam_warn ? scanForScam(d, v) : [];
-    showScamWarning(scams);
+    onScams(scams);
     d.addEventListener('click', (e) => {
       const a = e.target.closest && e.target.closest('a[href]');
       if (!a) return;
@@ -560,8 +637,7 @@ function scanForScam(doc, view) {
   return out;
 }
 
-function showScamWarning(list) {
-  const bar = $('#r-scam');
+function showScamWarning(list, bar = $('#r-scam')) {
   bar.hidden = !list.length;
   if (!list.length) return;
   bar.innerHTML = `${icon('shield', 18)}<div><b>This message may be a scam.</b> Don't enter passwords or payment details from its links.

@@ -1,8 +1,10 @@
 //! Kite Mail - lightweight desktop & mobile email client.
 
+mod archive;
 mod commands;
 mod dav;
 mod db;
+mod files;
 mod grammar;
 #[cfg(test)]
 mod it_tests;
@@ -40,6 +42,8 @@ pub fn run() {
             let _ = std::fs::create_dir_all(&dir);
             let db = db::Db::open(dir.join("kitemail.db")).map_err(|e| e.to_string())?;
             let state: mail::Shared = Arc::new(mail::AppState::new(db));
+            let archive = archive::Archive::open(&dir.join("archive.db")).map_err(|e| e.to_string())?;
+            app.manage(Arc::new(archive));
             app.manage(state.clone());
             push::start(app.handle().clone(), state);
             #[cfg(mobile)]
@@ -106,6 +110,24 @@ pub fn run() {
             commands::s3_disconnect,
             commands::s3_backup_now,
             commands::mark_spam,
+            commands::conversation,
+            commands::files_save_attachments,
+            commands::files_add_local,
+            commands::files_thumbnail,
+            commands::files_to_temp,
+            commands::files_collect_recent,
+            commands::archive_list,
+            commands::archive_import,
+            commands::archive_cancel,
+            commands::archive_list_messages,
+            commands::archive_search,
+            commands::archive_open,
+            commands::archive_attachment,
+            commands::archive_save_eml,
+            commands::archive_copy_to_mailbox,
+            commands::archive_rename,
+            commands::archive_delete,
+            commands::archive_delete_messages,
             commands::read_receipt,
             commands::receipt_done,
             commands::read_signature_file,

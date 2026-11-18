@@ -4,6 +4,12 @@ Kite Mail is a lightweight email client for **Windows, Linux and Android**. It's
 
 **Supported accounts:** Microsoft 365 (OAuth), Gmail (OAuth), and any provider that supports IMAP and SMTP.
 
+## What's new in 0.5 (Files folder, Archive, conversations)
+- **Files folder:** a *Files* folder on your mail server, next to Inbox and Sent, that collects pictures, PDFs and Word files from your mail (Excel and PowerPoint optional, per account). Each file is a small message with the file attached, so the folder syncs to every device and also shows in Outlook, Thunderbird or a phone's mail app. Kite Mail shows it as a gallery with picture thumbnails and filters; files can be opened, saved, sent by email or deleted, added from the computer, or saved from any email with the new *Save to Files* button. Duplicates are skipped (checked on the server), logos inside emails and tiny pictures are ignored. Settings → Accounts → an account → *Files folder*, including "Collect from the last 30 days".
+- **Archive** (new tab): import **PST, MSG, EML, MBOX, Maildir** and Kite Mail backups – single files or whole folders – into a searchable archive kept apart from your accounts. Folder trees are kept, attachments included, duplicates skipped, progress shown (and stoppable) for big PST files. Full-text search across everything; reply, reply all or **forward with the original attachments** from any account; copy messages back into a mailbox; save as .eml. (OST files – Outlook's offline cache – can't be read; export a PST from Outlook instead.)
+- **Conversations:** replies are grouped into one row in the list ("Sara, Omar · 3"), and the reader shows the whole conversation in order – including your own replies from Sent – so you can jump between messages. Turn it off under Appearance.
+- **Android app icon:** proper adaptive launcher icon (round, squircle, Android 13 themed icons).
+
 ## What's new in 0.4.1 (smaller Android app, safer attachments)
 - **Android APK ~20 MB instead of 224 MB:** CI now always builds the optimised release version, and the app uses one TLS stack (the platform's, same as for IMAP/SMTP) instead of also bundling rustls + ring.
 - **Dangerous attachments can't be opened directly:** programs, scripts, shortcuts, disk images and macro documents (.exe, .js, .lnk, .iso, .docm…) are marked in red and can only be saved – the same protection Thunderbird has.
@@ -132,9 +138,9 @@ Every push to `main` builds the Windows installer, the Linux packages and the An
 
 **Permanent download links:** tag a version and GitHub creates a **Release** with every installer attached:
 ```bash
-git tag v0.4.1 && git push origin v0.4.1
+git tag v0.5.0 && git push origin v0.5.0
 ```
-You can also use **Releases → Draft a new release → Choose a tag → `v0.4.1`**.
+You can also use **Releases → Draft a new release → Choose a tag → `v0.5.0`**.
 
 ---
 
@@ -218,14 +224,16 @@ src-tauri/src/
   pair.rs       encrypted one-time phone pairing (AES-256-GCM, QR, LAN transfer)
   db.rs         SQLite cache, contacts, tasks, settings, local drafts
   secrets.rs    OS keyring with fallback
-  it_tests.rs   end-to-end tests against real IMAP/SMTP servers, Nextcloud/DAV and S3
+  it_tests.rs   end-to-end tests against real IMAP/SMTP servers, Nextcloud/DAV, S3, Files folder, conversations
+  archive.rs    import tests; the Outlook ones use public samples if present: /tmp/msgsamples (msg-extractor's
+                example-msg-files) and /tmp/pstsamples (pst-extractor's enron.pst) – skipped otherwise
                 (S3: `moto_server -p 9010` with INITIAL_NO_AUTH_ACTION_COUNT set, so signatures are checked)
 ```
 
 ## Tests
 ```bash
 cd src-tauri
-cargo test                       # 29 unit tests (incl. pairing over the network and AWS SigV4 test vectors)
+cargo test                       # 34 unit tests (incl. pairing over the network, AWS SigV4 test vectors, PST/MSG/MBOX/Maildir import)
 cargo audit                      # dependency security check (policy: .cargo/audit.toml)
 LM_IT=1 cargo test it_tests      # 3 end-to-end tests against real servers:
                                  #   IMAPS localhost:993 + SMTPS :4650 (Dovecot + aiosmtpd),

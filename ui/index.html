@@ -15,6 +15,7 @@
       <button class="rail-btn active" data-tab="mail" title="Mail"><i data-icon="inbox" data-size="22"></i><span>Mail</span><b class="badge" id="badge-mail"></b></button>
       <button class="rail-btn" data-tab="contacts" title="Contacts"><i data-icon="users" data-size="22"></i><span>Contacts</span></button>
       <button class="rail-btn" data-tab="tasks" title="Tasks"><i data-icon="tasks" data-size="22"></i><span>Tasks</span><b class="badge" id="badge-tasks"></b></button>
+      <button class="rail-btn" data-tab="archive" title="Archive – imported mail (PST, MSG, EML, MBOX…)"><i data-icon="database" data-size="22"></i><span>Archive</span></button>
       <div class="rail-spacer"></div>
       <button class="rail-btn" id="btn-theme" title="Toggle light / dark"></button>
       <button class="rail-btn" data-tab="settings" title="Settings"><i data-icon="settings" data-size="22"></i><span>Settings</span></button>
@@ -45,6 +46,14 @@
       </div>
       <div id="ptr"><i data-icon="refresh"></i></div>
       <div id="messages" tabindex="0"><div id="msg-spacer"></div></div>
+      <div id="files-view" hidden>
+        <div class="files-bar">
+          <div class="seg" id="files-filter"></div>
+          <span class="grow"></span>
+          <button class="primary small" id="files-add" title="Add files from this device"><i data-icon="plus" data-size="15"></i> Add</button>
+        </div>
+        <div id="files-grid"></div>
+      </div>
       <div id="list-footer"></div>
     </section>
 
@@ -73,6 +82,7 @@
         </div>
         <div class="reader-scroll">
           <h1 id="r-subject"></h1>
+          <div id="r-thread" class="thread-strip" hidden></div>
           <div class="r-meta">
             <span id="r-avatar"></span>
             <div class="r-people">
@@ -96,6 +106,57 @@
         </div>
       </article>
     </main>
+
+    <!-- ================= ARCHIVE (imported mail) ================= -->
+    <section id="view-archive" class="tab-view" data-step="nav">
+      <aside class="av-nav">
+        <h2>Archive</h2>
+        <p class="hint">Mail imported from backups and other programs – kept separate from your accounts.</p>
+        <div class="av-import">
+          <button class="primary" id="av-import-files"><i data-icon="upload" data-size="16"></i> Import files…</button>
+          <button class="ghost" id="av-import-folder" title="Maildir, or a folder of .eml / .msg / .mbox / .pst files"><i data-icon="folder" data-size="16"></i> Folder…</button>
+        </div>
+        <p class="hint small">PST · MSG · EML · MBOX · Maildir · Kite Mail backups (.zip)</p>
+        <div id="av-progress" class="av-progress" hidden></div>
+        <nav id="av-tree"></nav>
+      </aside>
+      <section class="av-list">
+        <div class="list-toolbar">
+          <button class="icon only-narrow" id="av-back-nav" title="Archives"><i data-icon="back"></i></button>
+          <label class="search"><i data-icon="search" data-size="16"></i><input id="av-search" type="search" placeholder="Search the archive" autocomplete="off" /></label>
+        </div>
+        <div class="list-head"><span id="av-title"></span></div>
+        <div id="av-messages"></div>
+      </section>
+      <section class="av-reader">
+        <div id="av-empty" class="empty"><div class="empty-art"><i data-icon="database" data-size="44"></i></div><h3>Your archive</h3><p>Import a PST, MSG, EML, MBOX or Maildir backup, then search and send from it.</p></div>
+        <div id="av-content" hidden>
+          <div class="reader-bar av-bar">
+            <button class="icon only-narrow" id="av-back-list" title="Back"><i data-icon="back"></i></button>
+            <button class="tb" data-av="reply" title="Reply"><i data-icon="reply"></i><span>Reply</span></button>
+            <button class="tb" data-av="replyall" title="Reply all"><i data-icon="reply_all"></i><span>All</span></button>
+            <button class="tb" data-av="forward" title="Forward"><i data-icon="forward"></i><span>Forward</span></button>
+            <span class="grow"></span>
+            <button class="icon" data-av="copy" title="Copy to a mailbox (syncs to all your devices)"><i data-icon="move"></i></button>
+            <button class="icon" data-av="eml" title="Save as .eml"><i data-icon="download"></i></button>
+            <button class="icon" data-av="delete" title="Delete from archive"><i data-icon="trash"></i></button>
+          </div>
+          <div class="reader-scroll">
+            <h1 id="av-subject" class="r-subject"></h1>
+            <div class="r-meta"><span id="av-avatar"></span>
+              <div class="r-people"><div class="r-from"><strong id="av-from"></strong><span class="muted" id="av-from-addr"></span></div>
+                <div class="muted small" id="av-to"></div><div class="muted small" id="av-cc"></div></div>
+              <div class="muted small r-date" id="av-date"></div>
+            </div>
+            <div class="muted small av-where" id="av-where"></div>
+            <div id="av-remote" class="notice" hidden><i data-icon="eye_off" data-size="16"></i> Remote images blocked to protect your privacy. <button id="av-load-images" class="link">Load images</button></div>
+            <div id="av-scam" class="scam-bar" hidden></div>
+            <div id="av-attachments"></div>
+            <div class="frame-wrap"><iframe id="av-body" sandbox="allow-same-origin" title="Message body"></iframe></div>
+          </div>
+        </div>
+      </section>
+    </section>
 
     <!-- ================= CONTACTS ================= -->
     <section id="view-contacts" class="tab-view">
@@ -212,6 +273,8 @@
   <script src="js/compose.js"></script>
   <script src="js/contacts.js"></script>
   <script src="js/tasks.js"></script>
+  <script src="js/files.js"></script>
+  <script src="js/archive.js"></script>
   <script src="js/settings.js"></script>
   <script src="js/sync.js"></script>
   <script src="js/main.js"></script>

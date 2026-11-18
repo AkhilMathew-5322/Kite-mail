@@ -111,6 +111,12 @@ jobs:
           F=$(find src-tauri/gen/android -name MainActivity.kt | head -1)
           echo "Replacing $F"
           cp src-tauri/android/MainActivity.kt "$F"
+      - name: Kite Mail launcher icons (adaptive, round, themed)
+        run: |
+          RES=src-tauri/gen/android/app/src/main/res
+          find "$RES" -name 'ic_launcher*' -delete
+          cp -r src-tauri/android/res/. "$RES/"
+          ls "$RES"/mipmap-anydpi-v26
       # Always an optimised release build (stripped, LTO, size-optimised Rust; R8-shrunk Java) –
       # a debug build is ~10x bigger. Signed with your key when the secrets are set (see README);
       # otherwise with a throw-away key made for this build (installs fine, but each such build

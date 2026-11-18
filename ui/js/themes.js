@@ -37,7 +37,8 @@ const DEFAULT_SETTINGS = {
   density: 'comfortable', font_size: 14, dark_emails: true,
   notify_mail: true, notify_todos: true,
   lt_url: '', lt_lang: 'auto', call_template: '', remote_images: 'ask', signatures: {},
-  motion: false,                 // animations & transitions (off = calm, solid UI)
+  motion: false,
+  threads: true,                 // group replies into conversations                 // animations & transitions (off = calm, solid UI)
   notify_preview: 'full',        // full | sender | none
   notify_sound: 'default',       // default | none | custom
   notify_sound_file: '',
@@ -56,6 +57,7 @@ const ACCOUNT_PREF_DEFAULTS = {
   identities: [],                // [{ name, email, reply_to, organization }]
   bcc_self: false, reply_position: 'above', quote: true, request_receipt: false,
   sync_days: 14, sync_max: 500, offline_bodies: true,
+  collect_files: true, collect_kinds: ['images', 'pdf', 'word'],
 };
 function aprefs(id) {
   return { ...ACCOUNT_PREF_DEFAULTS, ...((S.settings.account_prefs || {})[id] || {}) };

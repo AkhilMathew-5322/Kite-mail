@@ -73,6 +73,7 @@ function sectionHtml(sec) {
         <div id="theme-editor"></div>
       </section>
       <section class="card">
+        ${toggle('threads', st.threads, 'Group replies into conversations', 'Replies (including yours from Sent) are shown together, in order')}
         ${toggle('motion', st.motion, 'Animations', 'Slides, fades and transitions. Off = calm, instant interface (also saves battery)')}
         <div class="set-row"><span>Density</span>${seg('density', st.density, [['comfortable', 'Comfortable'], ['compact', 'Compact']])}</div>
         <div class="set-row"><span>Text size</span><input type="range" min="12" max="18" step="1" value="${st.font_size}" id="font-size"/><b id="font-size-v">${st.font_size}px</b></div>
@@ -254,6 +255,15 @@ function accountEditorHtml(a) {
   </section>
 
   <section class="card">
+    <h4>${icon('files', 16)} Files folder</h4>
+    <p class="hint">A <b>Files</b> folder on your mail server, next to Inbox and Sent, that collects pictures and documents from your mail. Every file is a small message with the file attached, so it syncs to all your devices and also shows in Outlook, Thunderbird or a phone's mail app. Duplicates are skipped.</p>
+    ${aptoggle('collect_files', p.collect_files, 'Collect attachments from new mail automatically', 'Logos and tiny pictures inside emails are ignored; files over 25 MB are left in the email')}
+    <div class="set-row"><span>Collect</span><div class="kinds">${[['images', 'Pictures'], ['pdf', 'PDF'], ['word', 'Word'], ['excel', 'Excel'], ['powerpoint', 'PowerPoint']]
+      .map(([k, l]) => `<label class="check"><input type="checkbox" data-kind="${k}" ${p.collect_kinds.includes(k) ? 'checked' : ''}/> ${l}</label>`).join('')}</div></div>
+    <div class="set-actions"><button class="ghost" data-a="collect-recent">${icon('download', 15)} Collect from the last 30 days</button></div>
+  </section>
+
+  <section class="card">
     <h4>${icon('refresh', 16)} Synchronization & storage</h4>
     <div class="set-row"><span>Keep in sync</span><input type="number" min="1" max="3650" data-ap="sync_days" value="${p.sync_days}" class="port"/><span class="muted">days of mail, plus the newest</span>
       <input type="number" min="50" max="20000" step="50" data-ap="sync_max" value="${p.sync_max}" class="port"/><span class="muted">messages per folder</span></div>
@@ -306,6 +316,14 @@ async function accountAction(a, act, btn) {
       const i = Number(btn.closest('.ident-row').dataset.i);
       await saveIdentities(id, aprefs(id).identities.filter((_, j) => j !== i));
       renderSettings();
+      return;
+    }
+    case 'collect-recent': {
+      try {
+        const n = await withBusy('Collecting files from the last 30 days…', () => invoke('files_collect_recent', { accountId: id, days: 30 }));
+        toast(n ? `${n} file${n > 1 ? 's' : ''} added to Files` : 'No new files to collect', 'ok');
+        reloadFolders(id);
+      } catch (e) { toast(errText(e), 'error'); }
       return;
     }
     case 'sig-file': {
@@ -575,6 +593,7 @@ $('#settings-page').addEventListener('change', async (e) => {
     await saveSettings({ [t.dataset.toggle]: t.checked });
     if (t.dataset.toggle === 'dark_emails') renderBody();
     if (t.dataset.toggle === 'motion') applyTheme();
+    if (t.dataset.toggle === 'threads') renderList();
     return;
   }
   // account preference fields
@@ -584,6 +603,12 @@ $('#settings-page').addEventListener('change', async (e) => {
     await saveAccountPrefs(editAcct, { [k]: v });
     if (['label', 'color'].includes(k)) renderSidebar();
     if (['label', 'color', 'sig_html', 'sig_file_on'].includes(k)) renderSettings();
+    return;
+  }
+  if (t.dataset.kind && editAcct) {
+    const kinds = new Set(aprefs(editAcct).collect_kinds);
+    if (t.checked) kinds.add(t.dataset.kind); else kinds.delete(t.dataset.kind);
+    await saveAccountPrefs(editAcct, { collect_kinds: [...kinds] });
     return;
   }
   if (t.dataset.idK && editAcct) {

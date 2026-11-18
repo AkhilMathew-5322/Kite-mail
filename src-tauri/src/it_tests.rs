@@ -524,3 +524,129 @@ fn end_to_end_s3() {
     assert!(!s3::backup_due(&s3::load(db), "other@x.ae"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Files folder: automatic filing from new mail, manual saves, server-side duplicate detection,
+/// and what another mail app sees. Uses mailbox tester4. Skipped unless LM_IT=1.
+#[test]
+fn end_to_end_files_folder() {
+    if std::env::var("LM_IT").is_err() {
+        eprintln!("skipped (set LM_IT=1)");
+        return;
+    }
+    use base64::Engine;
+    let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+    let mut raw = raw_session_for("tester4@localhost");
+    wipe(&mut raw);
+    let photo = vec![9u8; 30_000];
+    let mail = format!(
+        "From: Sara <sara@example.ae>\r\nTo: tester4@localhost\r\nSubject: Site visit\r\nDate: Mon, 16 Nov 2026 09:00:00 +0400\r\nMessage-ID: <site@x>\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n\
+         --b\r\nContent-Type: text/plain\r\n\r\nPhotos and report attached\r\n\
+         --b\r\nContent-Type: image/png; name=logo.png\r\nContent-ID: <logo>\r\nContent-Disposition: inline\r\nContent-Transfer-Encoding: base64\r\n\r\n{}\r\n\
+         --b\r\nContent-Type: image/jpeg; name=site.jpg\r\nContent-Disposition: attachment; filename=site.jpg\r\nContent-Transfer-Encoding: base64\r\n\r\n{}\r\n\
+         --b\r\nContent-Type: application/pdf; name=report.pdf\r\nContent-Disposition: attachment; filename=report.pdf\r\nContent-Transfer-Encoding: base64\r\n\r\n{}\r\n--b--\r\n",
+        b64(&photo), b64(&photo), b64(b"%PDF-1.4 report")
+    );
+    raw.append("INBOX", mail.as_bytes()).finish().unwrap();
+
+    let st = AppState::new(Db::memory());
+    let mut acct = account(0);
+    acct.email = "tester4@localhost".into();
+    acct.username = "tester4@localhost".into();
+    acct.id = st.db.insert_account(&acct).unwrap();
+    secrets::set(&st.db, &secrets::password_key(acct.id), "secret123").unwrap();
+    st.refresh_folders(&acct).unwrap();
+    st.sync_folder(&acct, "INBOX", 100).unwrap();
+    let uid = st.db.list_messages(acct.id, "INBOX", 10).unwrap()[0].uid;
+
+    // automatic filing (default: pictures, PDF, Word) – the inline logo is skipped
+    assert_eq!(st.collect_from(&acct, "INBOX", &[uid]).unwrap(), 2);
+    let files = st.db.folder_by_special(acct.id, "files").unwrap().expect("Files folder created and recognised");
+    assert_eq!(files, "Files");
+    let mut names: Vec<String> = st.db.list_messages(acct.id, &files, 50).unwrap().into_iter().map(|m| m.subject).collect();
+    names.sort();
+    assert_eq!(names, vec!["report.pdf", "site.jpg"]);
+    // same mail again (e.g. on another device): nothing duplicated
+    assert_eq!(st.collect_from(&acct, "INBOX", &[uid]).unwrap(), 0);
+
+    // a file added from the computer, twice
+    let item = || crate::files::FileItem { name: "Trade licence.pdf".into(), mime: "application/pdf".into(), data: b"%PDF licence".to_vec(), source: None };
+    assert_eq!(st.save_files(&acct, &[item()]).unwrap(), (1, 0));
+    assert_eq!(st.save_files(&acct, &[item()]).unwrap(), (0, 1));
+
+    // turning collection off
+    st.db.set_setting("app", &serde_json::json!({ "account_prefs": { acct.id.to_string(): { "collect_files": false } } }).to_string()).unwrap();
+    assert_eq!(st.collect_from(&acct, "INBOX", &[uid]).unwrap(), 0);
+
+    // what any other mail app sees: a "Files" folder with one message per file
+    let mb = raw.select("Files").unwrap();
+    assert_eq!(mb.exists, 3);
+    let f = raw.fetch("1:*", "BODY.PEEK[]").unwrap();
+    let report = f.iter().filter_map(|m| m.body()).find_map(|b| {
+        let p = mail_parser::MessageParser::default().parse(b)?;
+        (p.subject() == Some("report.pdf")).then(|| (p.body_text(0).unwrap_or_default().into_owned(), p.attachments().next().map(|a| a.contents().to_vec())))
+    });
+    let (text, data) = report.expect("report.pdf message");
+    assert!(text.contains("From the email: Site visit"), "{text}");
+    assert_eq!(data.as_deref(), Some(&b"%PDF-1.4 report"[..]));
+}
+
+/// Conversations: replies across Inbox and Sent group together, older caches catch up, and a
+/// reply that arrives before its original still joins it. Uses mailbox tester5. Skipped unless LM_IT=1.
+#[test]
+fn end_to_end_conversations() {
+    if std::env::var("LM_IT").is_err() {
+        eprintln!("skipped (set LM_IT=1)");
+        return;
+    }
+    let msg = |from: &str, subj: &str, day: u32, mid: &str, irt: &str, refs: &str| {
+        let mut h = format!("From: {from}\r\nTo: tester5@localhost\r\nSubject: {subj}\r\nDate: {day:02} Nov 2026 09:00:00 +0400\r\nMessage-ID: <{mid}>\r\n");
+        if !irt.is_empty() { h.push_str(&format!("In-Reply-To: <{irt}>\r\n")); }
+        if !refs.is_empty() { h.push_str(&format!("References: {}\r\n", refs.split(' ').map(|r| format!("<{r}>")).collect::<Vec<_>>().join(" "))); }
+        format!("{h}\r\nbody of {mid}\r\n").into_bytes()
+    };
+    let mut raw = raw_session_for("tester5@localhost");
+    wipe(&mut raw);
+    raw.append("INBOX", &msg("Sara <sara@x.ae>", "Lease renewal", 1, "a@x", "", "")).finish().unwrap();
+    raw.append("INBOX", &msg("Omar <omar@x.ae>", "Re: Lease renewal", 3, "b@x", "a@x", "a@x")).finish().unwrap();
+    raw.append("INBOX", &msg("News <n@x.ae>", "Weekly news", 2, "c@x", "", "")).finish().unwrap();
+    raw.append("Sent", &msg("Me <tester5@localhost>", "Re: Lease renewal", 4, "d@x", "b@x", "a@x b@x")).finish().unwrap();
+    // a reply whose original only arrives later
+    raw.append("INBOX", &msg("Ali <ali@x.ae>", "Re: Visa", 6, "r2@x", "root2@x", "root2@x")).finish().unwrap();
+
+    let st = AppState::new(Db::memory());
+    let mut acct = account(0);
+    acct.email = "tester5@localhost".into();
+    acct.username = "tester5@localhost".into();
+    acct.id = st.db.insert_account(&acct).unwrap();
+    secrets::set(&st.db, &secrets::password_key(acct.id), "secret123").unwrap();
+    st.refresh_folders(&acct).unwrap();
+    st.sync_folder(&acct, "INBOX", 100).unwrap();
+    st.sync_folder(&acct, "Sent", 100).unwrap();
+
+    let inbox = st.db.list_messages(acct.id, "INBOX", 50).unwrap();
+    let by = |mid: &str| inbox.iter().find(|m| m.subject.contains(mid) || m.preview.contains(mid)).cloned();
+    let lease = inbox.iter().find(|m| m.subject == "Lease renewal").unwrap();
+    let conv = st.db.conversation(acct.id, &lease.thread).unwrap();
+    let order: Vec<(&str, &str)> = conv.iter().map(|m| (m.folder.as_str(), m.from_name.as_str())).collect();
+    assert_eq!(order, vec![("INBOX", "Sara"), ("INBOX", "Omar"), ("Sent", "Me")]);
+    let news = by("Weekly").unwrap();
+    assert_ne!(news.thread, lease.thread);
+    assert_eq!(st.db.conversation(acct.id, &news.thread).unwrap().len(), 1);
+
+    // the original of "Re: Visa" arrives afterwards and joins the same conversation
+    raw.append("INBOX", &msg("Me <tester5@localhost>", "Visa", 5, "root2@x", "", "")).finish().unwrap();
+    st.sync_folder(&acct, "INBOX", 100).unwrap();
+    let inbox = st.db.list_messages(acct.id, "INBOX", 50).unwrap();
+    let visa: Vec<_> = inbox.iter().filter(|m| m.subject.contains("Visa")).collect();
+    assert_eq!(visa.len(), 2);
+    assert_eq!(visa[0].thread, visa[1].thread);
+
+    // a cache from before conversations existed: threading headers are fetched on the next sync
+    st.db.clear_thread_info_for_test(acct.id);
+    assert_eq!(st.db.uids_without_thread(acct.id, "INBOX", 100).unwrap().len(), 5);
+    st.sync_folder(&acct, "INBOX", 100).unwrap();
+    st.sync_folder(&acct, "Sent", 100).unwrap();
+    assert!(st.db.uids_without_thread(acct.id, "INBOX", 100).unwrap().is_empty());
+    let lease = st.db.list_messages(acct.id, "INBOX", 50).unwrap().into_iter().find(|m| m.subject == "Lease renewal").unwrap();
+    assert_eq!(st.db.conversation(acct.id, &lease.thread).unwrap().len(), 3);
+}

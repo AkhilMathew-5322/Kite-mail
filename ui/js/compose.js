@@ -55,7 +55,7 @@ async function openCompose(opts = {}) {
   const fromSel = $('#c-from');
   fromSel.innerHTML = fromOptions();
   const def = S.accounts.some((a) => a.id === S.settings.default_account) ? S.settings.default_account : null;
-  const accountId = opts.accountId ?? view?.summary.account_id ?? S.cur?.accountId ?? def ?? S.accounts[0].id;
+  const accountId = opts.accountId ?? (view?.summary.account_id || null) ?? S.cur?.accountId ?? def ?? S.accounts[0].id;
   fromSel.value = `${accountId}:-1`;
   // replying to mail sent to one of our aliases: answer from that alias
   if (view) {
@@ -102,11 +102,11 @@ async function openCompose(opts = {}) {
         : `${signatureFor(accountId)}${head ? '\n\n' + head : ''}`;
       S.compose.in_reply_to = view.message_id || null;
       S.compose.references = view.references || null;
-      S.compose.reply_to_msg = ref;
+      S.compose.reply_to_msg = opts.archiveId ? null : ref;  // archived mail has no server copy to mark
     } else if (mode === 'forward') {
       subject = prefixSubject('Fwd', s.subject);
       body = `${signatureFor(accountId)}\n\n---------- Forwarded message ----------\nFrom: ${who}\nDate: ${fmtDate(s.date, true)}\nSubject: ${s.subject}\nTo: ${view.to}\n${view.cc ? 'Cc: ' + view.cc + '\n' : ''}\n${messageText(view)}`;
-      S.compose.forward_from = ref;
+      if (opts.archiveId) S.compose.forward_archive = opts.archiveId; else S.compose.forward_from = ref;
       S.compose.fwdNames = view.attachments.filter((a) => !a.inline).map((a) => a.name);
     }
   } else if (mode === 'new' && !body) {
@@ -169,7 +169,7 @@ function composePayload() {
     subject: $('#c-subject').value, body: $('#c-body').value,
     in_reply_to: c.in_reply_to, references: c.references,
     attachments: c.files, forward_from: c.forward_from, reply_to_msg: c.reply_to_msg,
-    draft: c.draft, local_draft_id: c.local_draft_id, message_id: c.message_id,
+    draft: c.draft, local_draft_id: c.local_draft_id, message_id: c.message_id, forward_archive: c.forward_archive || null,
   };
 }
 

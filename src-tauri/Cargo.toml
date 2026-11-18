@@ -1,6 +1,6 @@
 [package]
 name = "kitemail"
-version = "0.4.1"
+version = "0.5.0"
 description = "Lightweight desktop email client (IMAP/SMTP, Microsoft 365 & Gmail OAuth)"
 edition = "2021"
 
@@ -39,6 +39,9 @@ rand = "0.8"
 url = "2"
 chrono = "0.4"
 dirs = "5"
+cfb = "0.16"             # Outlook .msg files (Compound File Binary)
+flate2 = "1"             # compresses archived messages
+outlook-pst = "1.2"      # Outlook .pst files (vendored with one fix, see [patch] below)
 zip = { version = "9", default-features = false, features = ["deflate"] }
 
 # Nextcloud / DAV + pairing
@@ -65,3 +68,9 @@ lto = true
 codegen-units = 1
 strip = true
 # (no panic = "abort": a library panic on a malformed email must fail one action, not kill the app)
+
+# Microsoft's outlook-pst 1.2.0 with one fix: tolerate a stale heap-page cFree count that some
+# PST writers leave behind (it would otherwise reject real-world PSTs, e.g. the EDRM Enron set).
+# See vendor/outlook-pst/src/ltp/heap.rs ("Kite Mail patch").
+[patch.crates-io]
+outlook-pst = { path = "vendor/outlook-pst" }

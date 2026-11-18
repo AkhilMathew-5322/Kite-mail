@@ -60,7 +60,7 @@ pub struct Folder {
     pub unread: u32,
 }
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Clone, Debug, Default)]
 pub struct MsgSummary {
     pub account_id: i64,
     pub folder: String,
@@ -77,6 +77,13 @@ pub struct MsgSummary {
     pub has_attach: bool,
     /// First ~160 characters of the body, once the body has been downloaded.
     pub preview: String,
+    /// Conversation key: messages that reply to each other share it.
+    pub thread: String,
+    /// Message-ID and the ids it replies to (References + In-Reply-To), for threading.
+    #[serde(skip_serializing)]
+    pub msg_id: String,
+    #[serde(skip_serializing)]
+    pub parents: Vec<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -113,6 +120,9 @@ pub struct MsgRef {
 #[derive(Deserialize, Debug, Clone, Default)]
 pub struct Draft {
     pub account_id: i64,
+    /// Forwarding a message from the archive: its attachments are sent along.
+    #[serde(default)]
+    pub forward_archive: Option<i64>,
     /// Sending identity (an alias of the account); empty = the account's own name/address.
     #[serde(default)]
     pub from_name: String,
@@ -264,10 +274,17 @@ pub struct AccountPrefs {
     pub sync_max: u32,
     /// Download message bodies in the background for offline reading.
     pub offline_bodies: bool,
+    /// File attachments of new mail into the Files folder automatically.
+    pub collect_files: bool,
+    /// Which kinds: images, pdf, word, excel, powerpoint (see files::category).
+    pub collect_kinds: Vec<String>,
 }
 
 impl Default for AccountPrefs {
     fn default() -> Self {
-        Self { bcc_self: false, sync_days: 14, sync_max: 500, offline_bodies: true }
+        Self {
+            bcc_self: false, sync_days: 14, sync_max: 500, offline_bodies: true,
+            collect_files: true, collect_kinds: vec!["images".into(), "pdf".into(), "word".into()],
+        }
     }
 }

@@ -88,6 +88,12 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE todos ADD COLUMN raw TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE todos ADD COLUMN dirty INTEGER NOT NULL DEFAULT 1",
     "ALTER TABLE todos ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
+    // v0.5: conversations (NULL msg_id = threading headers not fetched yet)
+    "ALTER TABLE messages ADD COLUMN msg_id TEXT",
+    "ALTER TABLE messages ADD COLUMN parents TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE messages ADD COLUMN thread TEXT NOT NULL DEFAULT ''",
+    "CREATE INDEX IF NOT EXISTS messages_thread ON messages(account_id, thread)",
+    "CREATE INDEX IF NOT EXISTS messages_msgid ON messages(account_id, msg_id)",
 ];
 
 /// Sync bookkeeping for one contact / todo row.
@@ -113,7 +119,7 @@ fn now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
-const SUMMARY_COLS: &str = "account_id, folder, uid, subject, from_name, from_addr, to_addrs, date, size, seen, flagged, answered, has_attach, preview";
+const SUMMARY_COLS: &str = "account_id, folder, uid, subject, from_name, from_addr, to_addrs, date, size, seen, flagged, answered, has_attach, preview, thread";
 
 fn row_to_summary(r: &Row) -> rusqlite::Result<MsgSummary> {
     Ok(MsgSummary {
@@ -131,6 +137,8 @@ fn row_to_summary(r: &Row) -> rusqlite::Result<MsgSummary> {
         answered: r.get(11)?,
         has_attach: r.get(12)?,
         preview: r.get(13)?,
+        thread: r.get(14)?,
+        ..Default::default()
     })
 }
 
@@ -338,6 +346,7 @@ impl Db {
         let mut c = self.c();
         let tx = c.transaction().map_err(e)?;
         for m in list {
+            let thread = thread_key(&tx, m.account_id, &m.msg_id, &m.parents, &m.folder, m.uid).map_err(e)?;
             tx.execute(
                 "INSERT INTO messages(account_id,folder,uid,subject,from_name,from_addr,to_addrs,date,size,seen,flagged,answered,has_attach)
                  VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
@@ -346,8 +355,83 @@ impl Db {
                 params![m.account_id, m.folder, m.uid, m.subject, m.from_name, m.from_addr, m.to, m.date,
                         m.size, m.seen, m.flagged, m.answered, m.has_attach],
             ).map_err(e)?;
+            tx.execute(
+                "UPDATE messages SET msg_id=?4, parents=?5, thread=?6 WHERE account_id=?1 AND folder=?2 AND uid=?3",
+                params![m.account_id, m.folder, m.uid, m.msg_id, m.parents.join(" "), thread],
+            ).map_err(e)?;
         }
         tx.commit().map_err(e)
+    }
+
+    #[cfg(test)]
+    pub fn clear_thread_info_for_test(&self, account_id: i64) {
+        self.c().execute("UPDATE messages SET msg_id=NULL, parents='', thread='' WHERE account_id=?1", [account_id]).unwrap();
+    }
+
+    /// Cached messages whose threading headers were never fetched (from before v0.5).
+    pub fn uids_without_thread(&self, account_id: i64, folder: &str, limit: u32) -> R<Vec<u32>> {
+        let c = self.c();
+        let mut st = c.prepare("SELECT uid FROM messages WHERE account_id=?1 AND folder=?2 AND msg_id IS NULL ORDER BY date DESC LIMIT ?3").map_err(e)?;
+        let rows = st.query_map(params![account_id, folder, limit], |r| r.get::<_, u32>(0)).map_err(e)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(e)
+    }
+
+    /// Stores threading headers fetched later: (uid, Message-ID, parent ids).
+    pub fn set_thread_info(&self, account_id: i64, folder: &str, rows: &[(u32, String, Vec<String>)]) -> R<()> {
+        let mut c = self.c();
+        let tx = c.transaction().map_err(e)?;
+        for (uid, mid, parents) in rows {
+            let thread = thread_key(&tx, account_id, mid, parents, folder, *uid).map_err(e)?;
+            tx.execute(
+                "UPDATE messages SET msg_id=?4, parents=?5, thread=?6 WHERE account_id=?1 AND folder=?2 AND uid=?3",
+                params![account_id, folder, uid, mid, parents.join(" "), thread],
+            ).map_err(e)?;
+            // replies that arrived before this message and only knew it by its id join its thread
+            if !mid.is_empty() && thread != *mid {
+                tx.execute("UPDATE messages SET thread=?3 WHERE account_id=?1 AND thread=?2", params![account_id, mid, thread]).map_err(e)?;
+            }
+        }
+        tx.commit().map_err(e)
+    }
+
+    /// All messages of a conversation across the account's folders, oldest first.
+    /// The same message in two folders (Gmail "All Mail") is listed once.
+    pub fn conversation(&self, account_id: i64, thread: &str) -> R<Vec<MsgSummary>> {
+        if thread.is_empty() {
+            return Ok(vec![]);
+        }
+        let c = self.c();
+        let mut st = c.prepare(&format!(
+            "SELECT {SUMMARY_COLS}, msg_id, (SELECT special FROM folders f WHERE f.account_id=m.account_id AND f.name=m.folder) AS sp
+             FROM messages m WHERE account_id=?1 AND thread=?2 ORDER BY date ASC, uid ASC"
+        )).map_err(e)?;
+        let rows = st
+            .query_map(params![account_id, thread], |r| {
+                let mut m = row_to_summary(r)?;
+                m.msg_id = r.get::<_, Option<String>>(15)?.unwrap_or_default();
+                let sp: Option<String> = r.get(16)?;
+                Ok((m, sp.unwrap_or_default()))
+            })
+            .map_err(e)?
+            .filter_map(Result::ok)
+            .collect::<Vec<_>>();
+        let mut out: Vec<(MsgSummary, String)> = Vec::new();
+        for (m, sp) in rows {
+            if sp == "trash" || sp == "junk" {
+                continue;
+            }
+            if !m.msg_id.is_empty() {
+                if let Some(i) = out.iter().position(|(o, _)| o.msg_id == m.msg_id) {
+                    // keep the copy in a real folder rather than "All Mail"
+                    if out[i].1 == "all" && sp != "all" {
+                        out[i] = (m, sp);
+                    }
+                    continue;
+                }
+            }
+            out.push((m, sp));
+        }
+        Ok(out.into_iter().map(|(m, _)| m).collect())
     }
 
     pub fn update_flags(&self, account_id: i64, folder: &str, flags: &[(u32, bool, bool, bool)]) -> R<()> {
@@ -763,4 +847,28 @@ impl Db {
             .and_then(|p| serde_json::from_value(p).ok())
             .unwrap_or_default()
     }
+}
+
+/// Conversation key for a message: the thread of the first parent we already know, else the
+/// root of its References, else its own Message-ID (or a per-message key when it has none).
+fn thread_key(c: &Connection, account_id: i64, msg_id: &str, parents: &[String], folder: &str, uid: u32) -> rusqlite::Result<String> {
+    for p in parents {
+        let known: Option<String> = c
+            .query_row("SELECT thread FROM messages WHERE account_id=?1 AND msg_id=?2 AND thread!='' LIMIT 1", params![account_id, p], |r| r.get(0))
+            .optional()?;
+        if let Some(t) = known {
+            return Ok(t);
+        }
+    }
+    if let Some(root) = parents.first() {
+        return Ok(root.clone());
+    }
+    // a message other replies already point at keeps their thread
+    if !msg_id.is_empty() {
+        let known: Option<String> = c
+            .query_row("SELECT thread FROM messages WHERE account_id=?1 AND parents LIKE ?2 AND thread!='' LIMIT 1", params![account_id, format!("%{msg_id}%")], |r| r.get(0))
+            .optional()?;
+        return Ok(known.unwrap_or_else(|| msg_id.to_string()));
+    }
+    Ok(format!("u:{folder}:{uid}"))
 }

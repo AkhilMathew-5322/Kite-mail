@@ -141,6 +141,15 @@ fn idle_loop(app: AppHandle, st: Shared, account_id: i64, stop: Arc<AtomicBool>)
             Ok(new) => {
                 backoff = 15;
                 let _ = app.emit("mail-updated", json!({ "account_id": account_id, "folder": folder }));
+                // file attachments of new mail into the Files folder (account setting)
+                let with_files: Vec<u32> = new.iter().filter(|m| m.has_attach).map(|m| m.uid).collect();
+                if !with_files.is_empty() && st.db.account_prefs(account_id).collect_files {
+                    match st.collect_from(&acct, &folder, &with_files) {
+                        Ok(n) if n > 0 => { let _ = app.emit("files-updated", json!({ "account_id": account_id, "added": n })); }
+                        Err(e) => eprintln!("collecting files failed: {e}"),
+                        _ => {}
+                    }
+                }
                 if !new.is_empty() && setting_bool(&st, "notify_mail", true) {
                     let _ = app.emit("new-mail", json!({ "account_id": account_id, "count": new.len() }));
                     let (title, body) = notification_text(&setting_str(&st, "notify_preview", "full"), &acct.email, &new);
@@ -225,7 +234,7 @@ mod tests {
 
     fn m(name: &str, subj: &str) -> MsgSummary {
         MsgSummary { account_id: 1, folder: "INBOX".into(), uid: 1, subject: subj.into(), from_name: name.into(), from_addr: "x@y".into(),
-            to: String::new(), date: 0, size: 0, seen: false, flagged: false, answered: false, has_attach: false, preview: String::new() }
+            ..Default::default() }
     }
 
     #[test]

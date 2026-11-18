@@ -19,8 +19,8 @@ const READ_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub struct Conn {
     sock: TcpStream,
-    sess: Session,
-    selected: Option<String>,
+    pub(crate) sess: Session,
+    pub(crate) selected: Option<String>,
     has_move: bool,
     /// UIDPLUS: lets us expunge only our own messages (UID EXPUNGE).
     has_uidplus: bool,
@@ -99,13 +99,13 @@ impl AppState {
 
     /// Runs `f` with a live IMAP connection for the account. Reconnects once if the
     /// connection dropped (timeouts, server restarts, expired OAuth sessions).
-    fn with_imap<T>(&self, acct: &Account, f: impl FnMut(&mut Conn) -> imap::Result<T>) -> Result<T, String> {
+    pub(crate) fn with_imap<T>(&self, acct: &Account, f: impl FnMut(&mut Conn) -> imap::Result<T>) -> Result<T, String> {
         self.with_imap_opts(acct, true, f)
     }
 
     /// For non-idempotent commands (APPEND): never re-run after a dropped connection, because
     /// the server may already have executed it (would create a duplicate draft / sent copy).
-    fn with_imap_once<T>(&self, acct: &Account, f: impl FnMut(&mut Conn) -> imap::Result<T>) -> Result<T, String> {
+    pub(crate) fn with_imap_once<T>(&self, acct: &Account, f: impl FnMut(&mut Conn) -> imap::Result<T>) -> Result<T, String> {
         self.with_imap_opts(acct, false, f)
     }
 
@@ -231,7 +231,36 @@ impl AppState {
         }
         db.upsert_summaries(&headers)?;
         db.update_flags(acct.id, folder, &flags)?;
+        self.backfill_threads(acct, folder);
         Ok(())
+    }
+
+    /// Fetches threading headers for messages cached before conversations existed (a few
+    /// hundred per sync, so large folders catch up in the background).
+    fn backfill_threads(&self, acct: &Account, folder: &str) {
+        let Ok(missing) = self.db.uids_without_thread(acct.id, folder, 300) else { return };
+        if missing.is_empty() {
+            return;
+        }
+        let fetched = self.with_imap(acct, |c| {
+            ensure_selected(c, folder)?;
+            let mut out = Vec::new();
+            for f in c.sess.uid_fetch(uid_set(&missing), "(UID BODY.PEEK[HEADER])")?.iter() {
+                let Some(uid) = f.uid else { continue };
+                let h = mime::parse_headers(f.header().unwrap_or(b""));
+                out.push((uid, h.message_id, h.parents));
+            }
+            Ok(out)
+        });
+        if let Ok(mut rows) = fetched {
+            // messages the server didn't return: mark as done so we don't ask again
+            for uid in &missing {
+                if !rows.iter().any(|(u, _, _)| u == uid) {
+                    rows.push((*uid, String::new(), vec![]));
+                }
+            }
+            let _ = self.db.set_thread_info(acct.id, folder, &rows);
+        }
     }
 
     /// Searches a whole folder on the server (not just the downloaded part) for `query`
@@ -671,6 +700,30 @@ impl AppState {
 
     /// Uploads a Kite Mail backup into this account. Folders are matched by role (Inbox, Sent...)
     /// or name and created when missing. Messages already present (same Message-ID) are skipped.
+    /// Uploads complete messages into a folder (skipping ones already there, by Message-ID).
+    /// Used to copy archived mail back into a mailbox. Returns (added, already there).
+    pub fn append_messages(&self, acct: &Account, folder: &str, raws: &[Vec<u8>]) -> Result<(u32, u32), String> {
+        let auth = self.auth_for(acct)?;
+        let mut conn = connect(acct, &auth)?;
+        conn.sess.select(folder).map_err(|e| friendly_imap_error(&e))?;
+        let (mut added, mut skipped) = (0, 0);
+        for raw in raws {
+            let mid = mail_parser::MessageParser::default().parse(raw.as_slice()).and_then(|m| m.message_id().map(String::from));
+            let exists = match &mid {
+                Some(id) => conn.sess.uid_search(format!("HEADER Message-ID \"{}\"", id.replace(['"', '\\'], ""))).map(|r| !r.is_empty()).unwrap_or(false),
+                None => false,
+            };
+            if exists {
+                skipped += 1;
+                continue;
+            }
+            conn.sess.append(folder, raw).flag(Flag::Seen).finish().map_err(|e| friendly_imap_error(&e))?;
+            added += 1;
+        }
+        let _ = conn.sess.logout();
+        Ok((added, skipped))
+    }
+
     pub fn restore(&self, acct: &Account, path: &std::path::Path, progress: &dyn Fn(Progress)) -> Result<(u64, u64), String> {
         use std::io::Read;
         let file = std::fs::File::open(path).map_err(|e| format!("Cannot open backup: {e}"))?;
@@ -762,7 +815,7 @@ fn parse_flag(s: &str) -> Option<Flag<'static>> {
     })
 }
 
-const FLAGS_HEADER: &str = "X-KiteMail-Flags: ";
+pub const FLAGS_HEADER: &str = "X-KiteMail-Flags: ";
 
 /// One mboxrd entry: "From " line, flags header, body with LF endings and ">From" escaping.
 pub fn mbox_entry(raw: &[u8], flags: &[String], date: &str) -> Vec<u8> {
@@ -856,6 +909,9 @@ fn fetch_summaries(c: &mut Conn, account_id: i64, folder: &str, uids: &[u32]) ->
                 answered,
                 has_attach: h.has_attach,
                 preview: String::new(),
+                thread: String::new(),
+                msg_id: h.message_id,
+                parents: h.parents,
             });
         }
     }
@@ -1011,11 +1067,13 @@ fn special_of(name: &str, attrs: &[String]) -> &'static str {
         "trash" | "deleted items" | "deleted messages" | "bin" => "trash",
         "junk" | "spam" | "junk email" | "junk e-mail" | "bulk mail" => "junk",
         "archive" | "archives" => "archive",
+        // our Files folder (top level only, so a user's "Projects/Files" stays a normal folder)
+        "files" if !name.contains(['/', '.']) => "files",
         _ => "",
     }
 }
 
-const SPECIAL_ORDER: [&str; 7] = ["inbox", "drafts", "sent", "archive", "all", "junk", "trash"];
+const SPECIAL_ORDER: [&str; 8] = ["inbox", "drafts", "sent", "files", "archive", "all", "junk", "trash"];
 
 /// Turns raw LIST results into a display-ordered folder list: special folders first, then a tree.
 pub fn organize_folders(account_id: i64, raw: Vec<(String, String, Vec<String>)>) -> Vec<(Folder, i64)> {

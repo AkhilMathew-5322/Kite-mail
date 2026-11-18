@@ -1,4 +1,5 @@
 //! Tauri commands exposed to the web UI. Each one runs its blocking work off the UI thread.
+use std::sync::Arc;
 
 use crate::mail::{connect, Auth, Shared};
 use crate::models::*;
@@ -291,11 +292,26 @@ pub async fn search_server(state: State<'_, Shared>, account_id: i64, folder: St
 }
 
 #[tauri::command]
-pub async fn send_message(state: State<'_, Shared>, draft: Draft) -> Result<(), String> {
+pub async fn send_message(state: State<'_, Shared>, ar: ArchiveState<'_>, draft: Draft) -> Result<(), String> {
     let st = state.inner().clone();
+    let ar = ar.inner().clone();
     blocking(move || {
         let acct = st.db.account(draft.account_id)?;
-        st.send(&acct, &draft)
+        let Some(arch_id) = draft.forward_archive else { return st.send(&acct, &draft) };
+        // forwarding from the archive: hand its attachments over as files
+        let (_, raw) = ar.get(arch_id)?;
+        let dir = std::env::temp_dir().join("kitemail").join(format!("fwd-{arch_id}-{}", rand::random::<u32>()));
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let mut d = draft.clone();
+        for (i, (name, _, bytes)) in mime::all_attachments(&raw).into_iter().enumerate() {
+            let p = dir.join(format!("{i}")).join(safe_file_name(&name));
+            std::fs::create_dir_all(p.parent().unwrap_or(&dir)).map_err(|e| e.to_string())?;
+            std::fs::write(&p, bytes).map_err(|e| e.to_string())?;
+            d.attachments.push(p.to_string_lossy().into_owned());
+        }
+        let res = st.send(&acct, &d);
+        let _ = std::fs::remove_dir_all(&dir);
+        res
     })
     .await
 }
@@ -911,4 +927,284 @@ pub async fn file_data_url(path: String) -> Result<String, String> {
         _ => return Err("Choose an .mp3, .ogg, .wav, .m4a or .flac sound file".into()),
     };
     Ok(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
+}
+
+// ============================================================ archive (imported mail)
+
+type ArchiveState<'a> = State<'a, Arc<crate::archive::Archive>>;
+
+#[tauri::command]
+pub async fn archive_list(ar: ArchiveState<'_>) -> Result<Vec<crate::archive::ArchiveInfo>, String> {
+    ar.list()
+}
+
+/// Lets the user pick files ("files") or a folder ("folder") and imports them into a new archive.
+/// Progress arrives as "archive-progress" events. Returns None if nothing was picked.
+#[tauri::command]
+pub async fn archive_import(app: AppHandle, ar: ArchiveState<'_>, kind: String) -> Result<Option<crate::archive::ImportReport>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let ar = ar.inner().clone();
+    blocking(move || {
+        use tauri::Emitter;
+        let picked: Vec<std::path::PathBuf> = if kind == "folder" {
+            app.dialog().file().set_title("Import a mail folder (Maildir, or a folder of .eml / .msg / .mbox / .pst files)")
+                .blocking_pick_folder().and_then(|f| f.into_path().ok()).into_iter().collect()
+        } else {
+            app.dialog().file().set_title("Import mail files")
+                .add_filter("Mail files", &["pst", "msg", "eml", "emlx", "mbox", "mbx", "zip"])
+                .add_filter("All files", &["*"])
+                .blocking_pick_files().unwrap_or_default().into_iter().filter_map(|f| f.into_path().ok()).collect()
+        };
+        if picked.is_empty() {
+            return Ok(None);
+        }
+        let emitter = app.clone();
+        let rep = crate::archive::import_paths(&ar, &picked, &|p| { let _ = emitter.emit("archive-progress", p); })?;
+        Ok(Some(rep))
+    })
+    .await
+}
+
+#[tauri::command]
+pub fn archive_cancel() {
+    crate::archive::CANCEL.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[tauri::command]
+pub async fn archive_list_messages(ar: ArchiveState<'_>, archive_id: i64, folder: Option<String>, offset: i64, limit: i64) -> Result<Vec<crate::archive::ArchMsg>, String> {
+    ar.messages(archive_id, folder.as_deref(), offset, limit.clamp(1, 1000))
+}
+
+#[tauri::command]
+pub async fn archive_search(ar: ArchiveState<'_>, archive_id: Option<i64>, query: String) -> Result<Vec<crate::archive::ArchMsg>, String> {
+    let ar = ar.inner().clone();
+    blocking(move || ar.search(archive_id, &query, 500)).await
+}
+
+/// The archived message as a MessageView (summary.account_id = 0, summary.uid = archive message id).
+#[tauri::command]
+pub async fn archive_open(ar: ArchiveState<'_>, id: i64) -> Result<MessageView, String> {
+    let ar = ar.inner().clone();
+    blocking(move || {
+        let (m, raw) = ar.get(id)?;
+        let summary = MsgSummary {
+            account_id: 0, folder: m.folder, uid: m.id as u32, subject: m.subject, from_name: m.from_name, from_addr: m.from_addr,
+            to: m.to, date: m.date, size: m.size as u32, seen: true, has_attach: m.has_attach, preview: m.preview, ..Default::default()
+        };
+        mime::build_view(&raw, summary)
+    })
+    .await
+}
+
+/// Opens (save = false) or saves an attachment of an archived message.
+#[tauri::command]
+pub async fn archive_attachment(app: AppHandle, ar: ArchiveState<'_>, id: i64, index: usize, save: bool) -> Result<bool, String> {
+    let ar = ar.inner().clone();
+    blocking(move || {
+        let (_, raw) = ar.get(id)?;
+        let (name, _, bytes) = mime::attachment(&raw, index)?;
+        if save {
+            let Some(path) = app.dialog().file().set_file_name(safe_file_name(&name)).blocking_save_file() else { return Ok(false) };
+            std::fs::write(path.into_path().map_err(|e| e.to_string())?, bytes).map_err(|e| format!("Cannot save file: {e}"))?;
+            return Ok(true);
+        }
+        if is_dangerous_file(&name) {
+            return Err(format!("For your safety, \"{name}\" can't be opened from an email – files like this can run programs on your computer. If you trust the sender, use Save and scan the file first."));
+        }
+        let dir = std::env::temp_dir().join("kitemail").join(format!("archive-{id}"));
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let path = dir.join(safe_file_name(&name));
+        std::fs::write(&path, bytes).map_err(|e| format!("Cannot write temp file: {e}"))?;
+        app.opener().open_path(path.to_string_lossy(), None::<&str>).map_err(|e| format!("Cannot open file: {e}"))?;
+        Ok(true)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn archive_save_eml(app: AppHandle, ar: ArchiveState<'_>, id: i64) -> Result<bool, String> {
+    let ar = ar.inner().clone();
+    blocking(move || {
+        let (m, raw) = ar.get(id)?;
+        let name = format!("{}.eml", if m.subject.trim().is_empty() { "message" } else { m.subject.trim() });
+        let Some(path) = app.dialog().file().set_file_name(safe_file_name(&name)).add_filter("Email", &["eml"]).blocking_save_file() else { return Ok(false) };
+        std::fs::write(path.into_path().map_err(|e| e.to_string())?, raw).map_err(|e| format!("Cannot save file: {e}"))?;
+        Ok(true)
+    })
+    .await
+}
+
+/// Copies archived messages into a folder of a mail account (they then sync everywhere).
+#[tauri::command]
+pub async fn archive_copy_to_mailbox(state: State<'_, Shared>, ar: ArchiveState<'_>, ids: Vec<i64>, account_id: i64, folder: String) -> Result<(u32, u32), String> {
+    let st = state.inner().clone();
+    let ar = ar.inner().clone();
+    blocking(move || {
+        let acct = st.db.account(account_id)?;
+        let raws: Vec<Vec<u8>> = ids.iter().map(|id| ar.get(*id).map(|(_, r)| r)).collect::<Result<_, _>>()?;
+        let res = st.append_messages(&acct, &folder, &raws)?;
+        let _ = st.sync_folder(&acct, &folder, 200);
+        Ok(res)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn archive_rename(ar: ArchiveState<'_>, archive_id: i64, name: String) -> Result<(), String> {
+    if name.trim().is_empty() {
+        return Err("Enter a name".into());
+    }
+    ar.rename(archive_id, &name)
+}
+
+#[tauri::command]
+pub async fn archive_delete(ar: ArchiveState<'_>, archive_id: i64) -> Result<(), String> {
+    let ar = ar.inner().clone();
+    blocking(move || ar.delete(archive_id)).await
+}
+
+#[tauri::command]
+pub async fn archive_delete_messages(ar: ArchiveState<'_>, ids: Vec<i64>) -> Result<(), String> {
+    ar.delete_messages(&ids)
+}
+
+// ============================================================ Files folder
+
+/// Files attachments of a message into the Files folder. `indexes` empty = all real attachments.
+#[tauri::command]
+pub async fn files_save_attachments(state: State<'_, Shared>, account_id: i64, folder: String, uid: u32, indexes: Vec<usize>) -> Result<(u32, u32), String> {
+    let st = state.inner().clone();
+    blocking(move || {
+        let acct = st.db.account(account_id)?;
+        let raw = st.raw_message(&acct, &folder, uid)?;
+        let m = mail_parser::MessageParser::default().parse(raw.as_slice()).ok_or("Could not read the message")?;
+        let src = crate::files::Source {
+            subject: m.subject().unwrap_or("").to_string(),
+            from: m.from().and_then(|a| a.first()).and_then(|a| a.address()).unwrap_or("").to_string(),
+            date: m.date().map(|d| d.to_timestamp()).unwrap_or(0),
+        };
+        let all = mime::all_attachments(&raw);
+        let items: Vec<crate::files::FileItem> = all
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| indexes.is_empty() || indexes.contains(i))
+            .map(|(_, (name, mime, data))| crate::files::FileItem { name, mime, data, source: Some(src.clone()) })
+            .collect();
+        if items.is_empty() {
+            return Err("This message has no attachments".into());
+        }
+        st.save_files(&acct, &items)
+    })
+    .await
+}
+
+/// Uploads files from this computer / phone into the Files folder.
+#[tauri::command]
+pub async fn files_add_local(app: AppHandle, state: State<'_, Shared>, account_id: i64) -> Result<Option<(u32, u32)>, String> {
+    let st = state.inner().clone();
+    blocking(move || {
+        let picked = app.dialog().file().set_title("Add files to the Files folder").blocking_pick_files().unwrap_or_default();
+        let paths: Vec<std::path::PathBuf> = picked.into_iter().filter_map(|f| f.into_path().ok()).collect();
+        if paths.is_empty() {
+            return Ok(None);
+        }
+        let acct = st.db.account(account_id)?;
+        let mut items = Vec::new();
+        for p in paths {
+            let len = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+            if len > 25 * 1024 * 1024 {
+                return Err(format!("{} is larger than 25 MB – mail servers won't store it", p.display()));
+            }
+            let data = std::fs::read(&p).map_err(|e| crate::mail::friendly_io(&e, "file"))?;
+            let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
+            items.push(crate::files::FileItem { mime: crate::smtp::guess_mime(&name).to_string(), name, data, source: None });
+        }
+        st.save_files(&acct, &items).map(Some)
+    })
+    .await
+}
+
+/// Picture preview for the gallery: the file as a data: URL (images up to 8 MB only).
+#[tauri::command]
+pub async fn files_thumbnail(state: State<'_, Shared>, account_id: i64, folder: String, uid: u32) -> Result<Option<String>, String> {
+    use base64::Engine;
+    let st = state.inner().clone();
+    blocking(move || {
+        let acct = st.db.account(account_id)?;
+        let raw = st.raw_message(&acct, &folder, uid)?;
+        let Ok((name, mime, data)) = mime::attachment(&raw, 0) else { return Ok(None) };
+        let mime = if mime.starts_with("image/") { mime } else { crate::smtp::guess_mime(&name).to_string() };
+        if !mime.starts_with("image/") || mime.contains("svg") || data.len() > 8 * 1024 * 1024 {
+            return Ok(None);
+        }
+        Ok(Some(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(data))))
+    })
+    .await
+}
+
+/// Writes a stored file to a temporary path (to attach it to a new email).
+#[tauri::command]
+pub async fn files_to_temp(state: State<'_, Shared>, account_id: i64, folder: String, uid: u32) -> Result<String, String> {
+    let st = state.inner().clone();
+    blocking(move || {
+        let acct = st.db.account(account_id)?;
+        let raw = st.raw_message(&acct, &folder, uid)?;
+        let (name, _, data) = mime::attachment(&raw, 0)?;
+        let dir = std::env::temp_dir().join("kitemail").join(format!("files-{account_id}-{uid}"));
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let path = dir.join(safe_file_name(&name));
+        std::fs::write(&path, data).map_err(|e| e.to_string())?;
+        Ok(path.to_string_lossy().into_owned())
+    })
+    .await
+}
+
+/// Files attachments from mail of the last `days` days in the Inbox (one-off catch-up).
+#[tauri::command]
+pub async fn files_collect_recent(state: State<'_, Shared>, account_id: i64, days: u32) -> Result<u32, String> {
+    let st = state.inner().clone();
+    blocking(move || {
+        let acct = st.db.account(account_id)?;
+        let inbox = st.db.folder_by_special(account_id, "inbox")?.unwrap_or_else(|| "INBOX".into());
+        let since = chrono::Utc::now().timestamp() - days.clamp(1, 365) as i64 * 86_400;
+        let uids: Vec<u32> = st.db.list_messages(account_id, &inbox, 5000)?.into_iter().filter(|m| m.has_attach && m.date >= since).map(|m| m.uid).collect();
+        let mut prefs = st.db.account_prefs(account_id);
+        prefs.collect_files = true; // the button works even when automatic filing is off
+        let mut items = Vec::new();
+        for uid in uids {
+            if let Ok(raw) = st.raw_message(&acct, &inbox, uid) {
+                items.extend(crate::files::collectable(&raw, &prefs.collect_kinds));
+            }
+        }
+        st.save_files(&acct, &items).map(|(a, _)| a)
+    })
+    .await
+}
+
+/// Every message of a conversation (across Inbox, Sent, Archive…), oldest first.
+#[tauri::command]
+pub async fn conversation(state: State<'_, Shared>, account_id: i64, thread: String) -> Result<Vec<MsgSummary>, String> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+    // Your replies live in Sent: make sure it is reasonably fresh (at most every 5 minutes).
+    static LAST: OnceLock<Mutex<HashMap<i64, Instant>>> = OnceLock::new();
+    let st = state.inner().clone();
+    blocking(move || {
+        let due = {
+            let mut m = LAST.get_or_init(Default::default).lock().unwrap_or_else(|p| p.into_inner());
+            let due = m.get(&account_id).is_none_or(|t| t.elapsed() > Duration::from_secs(300));
+            if due {
+                m.insert(account_id, Instant::now());
+            }
+            due
+        };
+        if due {
+            if let (Ok(acct), Ok(Some(sent))) = (st.db.account(account_id), st.db.folder_by_special(account_id, "sent")) {
+                let _ = st.sync_folder(&acct, &sent, 200);
+            }
+        }
+        st.db.conversation(account_id, &thread)
+    })
+    .await
 }

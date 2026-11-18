@@ -12,6 +12,9 @@ pub struct HeaderInfo {
     pub to: String,
     pub date: i64,
     pub has_attach: bool,
+    pub message_id: String,
+    /// References (oldest first) then In-Reply-To, without duplicates.
+    pub parents: Vec<String>,
 }
 
 pub fn format_address_list(a: Option<&Address>) -> String {
@@ -44,7 +47,7 @@ fn text_list(v: &HeaderValue) -> String {
 pub fn parse_headers(raw: &[u8]) -> HeaderInfo {
     let parser = MessageParser::default();
     let Some(m) = parser.parse(raw) else {
-        return HeaderInfo { subject: String::new(), from_name: String::new(), from_addr: String::new(), to: String::new(), date: 0, has_attach: false };
+        return HeaderInfo { subject: String::new(), from_name: String::new(), from_addr: String::new(), to: String::new(), date: 0, has_attach: false, message_id: String::new(), parents: vec![] };
     };
     let (from_name, from_addr) = m
         .from()
@@ -62,7 +65,23 @@ pub fn parse_headers(raw: &[u8]) -> HeaderInfo {
         to: format_address_list(m.to()),
         date: m.date().map(|d| d.to_timestamp()).unwrap_or(0),
         has_attach,
+        message_id: m.message_id().unwrap_or("").trim().to_string(),
+        parents: thread_parents(&m),
     }
+}
+
+/// Ids a message replies to: References (root first) then In-Reply-To.
+pub fn thread_parents(m: &mail_parser::Message) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for list in [m.references().as_text_list(), m.in_reply_to().as_text_list()].into_iter().flatten() {
+        for id in list {
+            let id = id.trim().to_string();
+            if !id.is_empty() && !out.contains(&id) {
+                out.push(id);
+            }
+        }
+    }
+    out
 }
 
 /// Short one-line preview of a message body (skips quoted reply lines).
@@ -318,7 +337,7 @@ Content-Type: multipart/mixed; boundary=\"b1\"\r\n\r\n\
 --b1--\r\n";
 
     fn summary() -> MsgSummary {
-        MsgSummary { account_id: 1, folder: "INBOX".into(), uid: 1, subject: String::new(), from_name: String::new(), from_addr: String::new(), to: String::new(), date: 0, size: 0, seen: false, flagged: false, answered: false, has_attach: false, preview: String::new() }
+        MsgSummary { account_id: 1, folder: "INBOX".into(), uid: 1, ..Default::default() }
     }
 
     #[test]
