@@ -108,7 +108,7 @@ cargo tauri android build --apk --debug --target aarch64     # installable test 
 ```
 **Installing on a phone:** copy the `.apk` to the phone and open it. You'll need to allow "Install unknown apps" for your file manager or browser. Then open Kite Mail → **Scan code from computer**.
 
-**Signed release APK (smaller and faster):** create a signing key once, then add it to GitHub under **Settings → Secrets and variables → Actions**:
+**Your own signing key (so updates install over the old version):** CI always builds the small, optimised release APK. Create a signing key once, then add it to GitHub under **Settings → Secrets and variables → Actions**:
 ```bash
 keytool -genkey -v -keystore kitemail.jks -alias kitemail -keyalg RSA -keysize 2048 -validity 10000
 base64 -w0 kitemail.jks      # copy the output
@@ -119,7 +119,7 @@ base64 -w0 kitemail.jks      # copy the output
 | `ANDROID_KEYSTORE_PASSWORD` | the keystore password |
 | `ANDROID_KEY_ALIAS` | `kitemail` |
 
-Keep `kitemail.jks` safe: future updates must be signed with the same key. Without these secrets, the build produces a debug-signed test APK instead.
+Keep `kitemail.jks` safe: future updates must be signed with the same key. Without these secrets, CI signs each build with a temporary key (`…-testkey.apk`): it installs fine, but to update you must uninstall the previous build first.
 
 ### GitHub Actions & releases
 Every push to `main` builds the Windows installer, the Linux packages and the Android APK. You can download them from the run's **Artifacts** for 90 days, and only signed-in users can do so.

@@ -111,8 +111,10 @@ jobs:
           F=$(find src-tauri/gen/android -name MainActivity.kt | head -1)
           echo "Replacing $F"
           cp src-tauri/android/MainActivity.kt "$F"
-      # Signed, optimised release APK when a signing key is configured (see README),
-      # otherwise a debug-signed APK that installs fine for testing.
+      # Always an optimised release build (stripped, LTO, size-optimised Rust; R8-shrunk Java) –
+      # a debug build is ~10x bigger. Signed with your key when the secrets are set (see README);
+      # otherwise with a throw-away key made for this build (installs fine, but each such build
+      # must replace the previous one by uninstalling it first).
       - name: Build APK
         env:
           KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
@@ -120,19 +122,25 @@ jobs:
           KS_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
           mkdir -p dist
+          cargo tauri android build --apk --target aarch64
+          UNSIGNED=$(find src-tauri/gen/android/app/build/outputs/apk -name '*release-unsigned.apk' | head -1)
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$BT/zipalign" -f -p 4 "$UNSIGNED" aligned.apk
           if [ -n "$KS_B64" ]; then
-            cargo tauri android build --apk --target aarch64
-            UNSIGNED=$(find src-tauri/gen/android/app/build/outputs/apk -name '*release-unsigned.apk' | head -1)
             echo "$KS_B64" | base64 -d > ks.jks
-            BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
-            "$BT/zipalign" -f -p 4 "$UNSIGNED" aligned.apk
-            "$BT/apksigner" sign --ks ks.jks --ks-pass env:KS_PASS --ks-key-alias "$KS_ALIAS" --out "dist/KiteMail-${GITHUB_REF_NAME}-android-arm64.apk" aligned.apk
-            rm -f ks.jks
+            OUT="dist/KiteMail-${GITHUB_REF_NAME}-android-arm64.apk"
           else
-            cargo tauri android build --apk --debug --target aarch64
-            cp "$(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk' | head -1)" "dist/KiteMail-${GITHUB_REF_NAME}-android-arm64-debug.apk"
+            echo "::warning::No ANDROID_KEYSTORE_B64 secret – signing with a temporary key (see README → Android signing)"
+            KS_PASS=$(openssl rand -hex 16); KS_ALIAS=kitemail
+            keytool -genkeypair -keystore ks.jks -storepass "$KS_PASS" -keypass "$KS_PASS" -alias "$KS_ALIAS" \
+              -keyalg RSA -keysize 2048 -validity 3650 -dname "CN=Kite Mail test build" >/dev/null
+            OUT="dist/KiteMail-${GITHUB_REF_NAME}-android-arm64-testkey.apk"
           fi
+          KS_PASS="$KS_PASS" "$BT/apksigner" sign --ks ks.jks --ks-pass env:KS_PASS --ks-key-alias "$KS_ALIAS" --out "$OUT" aligned.apk
+          rm -f ks.jks aligned.apk
+          "$BT/apksigner" verify "$OUT"
           ls -la dist
+          unzip -lv "$OUT" | sort -k1 -n -r | head -6
       - uses: actions/upload-artifact@v7
         with:
           name: kitemail-android
