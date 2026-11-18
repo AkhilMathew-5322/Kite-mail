@@ -114,10 +114,35 @@ impl AppState {
         if let Some(f) = self.db.folder_by_special(acct.id, "files")? {
             return Ok(f);
         }
-        let _ = self.with_imap(acct, |c| c.sess.create(FOLDER));
-        let _ = self.with_imap(acct, |c| c.sess.subscribe(FOLDER));
+        // Servers like cPanel/Courier keep every folder under "INBOX." and refuse top-level
+        // names, so fall back to INBOX<delim>Files when the plain name is rejected.
+        let delim = self
+            .with_imap(acct, |c| Ok(c.sess.list(Some(""), Some("INBOX"))?.iter().find_map(|n| n.delimiter().map(str::to_string))))?
+            .unwrap_or_else(|| "/".into());
+        let mut last_err = String::new();
+        for name in [FOLDER.to_string(), format!("INBOX{delim}{FOLDER}")] {
+            match self.with_imap(acct, |c| c.sess.create(&name)) {
+                Ok(()) => {}
+                Err(e) if already_exists(&e) => {}
+                Err(e) => {
+                    last_err = e;
+                    continue;
+                }
+            }
+            let _ = self.with_imap(acct, |c| c.sess.subscribe(&name));
+            self.refresh_folders(acct)?;
+            if let Some(f) = self.db.folder_by_special(acct.id, "files")? {
+                return Ok(f);
+            }
+        }
         self.refresh_folders(acct)?;
-        self.db.folder_by_special(acct.id, "files")?.ok_or_else(|| "Could not create the Files folder on the mail server".to_string())
+        self.db.folder_by_special(acct.id, "files")?.ok_or_else(|| {
+            if last_err.is_empty() {
+                "Could not create the Files folder on the mail server".to_string()
+            } else {
+                format!("Could not create the Files folder on the mail server: {last_err}")
+            }
+        })
     }
 
     /// Uploads files to the Files folder, skipping ones already there. Returns (added, already there).
@@ -145,6 +170,42 @@ impl AppState {
         Ok((added, skipped))
     }
 
+    /// Files attachments from Inbox mail of the last `days` days (one-off catch-up).
+    pub fn collect_recent(&self, acct: &Account, days: u32) -> Result<u32, String> {
+        let inbox = self.db.folder_by_special(acct.id, "inbox")?.unwrap_or_else(|| "INBOX".into());
+        let since = chrono::Utc::now().timestamp() - days.clamp(1, 365) as i64 * 86_400;
+        let uids: Vec<u32> = self.db.list_messages(acct.id, &inbox, 5000)?.into_iter().filter(|m| m.has_attach && m.date >= since).map(|m| m.uid).collect();
+        let kinds = self.db.account_prefs(acct.id).collect_kinds;
+        let mut items = Vec::new();
+        for uid in uids {
+            if let Ok(raw) = self.raw_message(acct, &inbox, uid) {
+                items.extend(collectable(&raw, &kinds));
+            }
+        }
+        if items.is_empty() {
+            self.files_folder(acct)?; // still make the folder visible
+            return Ok(0);
+        }
+        self.save_files(acct, &items).map(|(a, _)| a)
+    }
+
+    /// Run once per account when it connects: makes sure the Files folder exists (so it shows
+    /// next to Inbox and Sent right away) and, the first time ever, fills it from the last
+    /// 30 days of mail. Returns how many files were added.
+    pub fn prepare_files(&self, acct: &Account) -> Result<u32, String> {
+        if !self.db.account_prefs(acct.id).collect_files {
+            return Ok(0);
+        }
+        self.files_folder(acct)?;
+        let key = format!("files-initial:{}", acct.email.to_lowercase());
+        if self.db.get_setting(&key).is_some() {
+            return Ok(0);
+        }
+        let n = self.collect_recent(acct, 30)?;
+        self.db.set_setting(&key, "1")?;
+        Ok(n)
+    }
+
     /// Files new mail's attachments (account setting "collect_files").
     pub fn collect_from(&self, acct: &Account, folder: &str, uids: &[u32]) -> Result<u32, String> {
         let prefs = self.db.account_prefs(acct.id);
@@ -159,6 +220,12 @@ impl AppState {
         }
         self.save_files(acct, &items).map(|(a, _)| a)
     }
+}
+
+/// True for a CREATE refusal that only means the folder is already there.
+fn already_exists(err: &str) -> bool {
+    let e = err.to_ascii_lowercase();
+    e.contains("alreadyexists") || e.contains("already exist") || e.contains("duplicate")
 }
 
 #[cfg(test)]

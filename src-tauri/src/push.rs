@@ -133,6 +133,7 @@ pub fn start(app: AppHandle, st: Shared) {
 fn idle_loop(app: AppHandle, st: Shared, account_id: i64, stop: Arc<AtomicBool>) {
     let mut conn = None;
     let mut backoff = 15u64;
+    let mut files_ready = false;
     while !stop.load(Ordering::Relaxed) {
         let Ok(acct) = st.db.account(account_id) else { break };
         let folder = st.db.folder_by_special(account_id, "inbox").ok().flatten().unwrap_or_else(|| "INBOX".into());
@@ -141,6 +142,14 @@ fn idle_loop(app: AppHandle, st: Shared, account_id: i64, stop: Arc<AtomicBool>)
             Ok(new) => {
                 backoff = 15;
                 let _ = app.emit("mail-updated", json!({ "account_id": account_id, "folder": folder }));
+                // first successful sync: create the Files folder and do the one-time catch-up
+                if !files_ready {
+                    files_ready = true;
+                    match st.prepare_files(&acct) {
+                        Ok(n) => { let _ = app.emit("files-updated", json!({ "account_id": account_id, "added": n })); }
+                        Err(e) => eprintln!("Files folder: {e}"),
+                    }
+                }
                 // file attachments of new mail into the Files folder (account setting)
                 let with_files: Vec<u32> = new.iter().filter(|m| m.has_attach).map(|m| m.uid).collect();
                 if !with_files.is_empty() && st.db.account_prefs(account_id).collect_files {

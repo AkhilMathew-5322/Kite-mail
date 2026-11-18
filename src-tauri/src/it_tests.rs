@@ -539,7 +539,7 @@ fn end_to_end_files_folder() {
     wipe(&mut raw);
     let photo = vec![9u8; 30_000];
     let mail = format!(
-        "From: Sara <sara@example.ae>\r\nTo: tester4@localhost\r\nSubject: Site visit\r\nDate: Mon, 16 Nov 2026 09:00:00 +0400\r\nMessage-ID: <site@x>\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n\
+        "From: Sara <sara@example.ae>\r\nTo: tester4@localhost\r\nSubject: Site visit\r\nDate: Mon, 07 Sep 2026 09:00:00 +0400\r\nMessage-ID: <site@x>\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n\
          --b\r\nContent-Type: text/plain\r\n\r\nPhotos and report attached\r\n\
          --b\r\nContent-Type: image/png; name=logo.png\r\nContent-ID: <logo>\r\nContent-Disposition: inline\r\nContent-Transfer-Encoding: base64\r\n\r\n{}\r\n\
          --b\r\nContent-Type: image/jpeg; name=site.jpg\r\nContent-Disposition: attachment; filename=site.jpg\r\nContent-Transfer-Encoding: base64\r\n\r\n{}\r\n\
@@ -555,8 +555,15 @@ fn end_to_end_files_folder() {
     acct.id = st.db.insert_account(&acct).unwrap();
     secrets::set(&st.db, &secrets::password_key(acct.id), "secret123").unwrap();
     st.refresh_folders(&acct).unwrap();
+
+    // connecting the account creates the Files folder and catches up on the last 30 days once
+    raw.append("INBOX", format!("From: Omar <omar@x.ae>\r\nTo: tester4@localhost\r\nSubject: Recent scan\r\nDate: {}\r\nMessage-ID: <recent@x>\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nscan\r\n--b\r\nContent-Type: application/pdf; name=scan.pdf\r\nContent-Disposition: attachment; filename=scan.pdf\r\nContent-Transfer-Encoding: base64\r\n\r\n{}\r\n--b--\r\n",
+        chrono::Utc::now().to_rfc2822(), b64(b"%PDF scan")).as_bytes()).finish().unwrap();
     st.sync_folder(&acct, "INBOX", 100).unwrap();
-    let uid = st.db.list_messages(acct.id, "INBOX", 10).unwrap()[0].uid;
+    assert_eq!(st.prepare_files(&acct).unwrap(), 1); // only the recent mail (the site visit is older than 30 days)
+    assert_eq!(st.db.folder_by_special(acct.id, "files").unwrap().as_deref(), Some("Files"));
+    assert_eq!(st.prepare_files(&acct).unwrap(), 0); // once only
+    let uid = st.db.list_messages(acct.id, "INBOX", 10).unwrap().into_iter().find(|m| m.subject == "Site visit").unwrap().uid;
 
     // automatic filing (default: pictures, PDF, Word) – the inline logo is skipped
     assert_eq!(st.collect_from(&acct, "INBOX", &[uid]).unwrap(), 2);
@@ -564,7 +571,7 @@ fn end_to_end_files_folder() {
     assert_eq!(files, "Files");
     let mut names: Vec<String> = st.db.list_messages(acct.id, &files, 50).unwrap().into_iter().map(|m| m.subject).collect();
     names.sort();
-    assert_eq!(names, vec!["report.pdf", "site.jpg"]);
+    assert_eq!(names, vec!["report.pdf", "scan.pdf", "site.jpg"]);
     // same mail again (e.g. on another device): nothing duplicated
     assert_eq!(st.collect_from(&acct, "INBOX", &[uid]).unwrap(), 0);
 
@@ -579,7 +586,7 @@ fn end_to_end_files_folder() {
 
     // what any other mail app sees: a "Files" folder with one message per file
     let mb = raw.select("Files").unwrap();
-    assert_eq!(mb.exists, 3);
+    assert_eq!(mb.exists, 4);
     let f = raw.fetch("1:*", "BODY.PEEK[]").unwrap();
     let report = f.iter().filter_map(|m| m.body()).find_map(|b| {
         let p = mail_parser::MessageParser::default().parse(b)?;
@@ -649,4 +656,41 @@ fn end_to_end_conversations() {
     assert!(st.db.uids_without_thread(acct.id, "INBOX", 100).unwrap().is_empty());
     let lease = st.db.list_messages(acct.id, "INBOX", 50).unwrap().into_iter().find(|m| m.subject == "Lease renewal").unwrap();
     assert_eq!(st.db.conversation(acct.id, &lease.thread).unwrap().len(), 3);
+}
+
+/// cPanel/Courier-style server: every folder lives under "INBOX." and top-level CREATE is refused.
+/// Expects a second Dovecot on localhost:1993 with `prefix = INBOX.` / `separator = .`.
+#[test]
+fn end_to_end_files_folder_inbox_prefix() {
+    if std::env::var("LM_IT").is_err() || std::net::TcpStream::connect(("localhost", 1993)).is_err() {
+        eprintln!("skipped (set LM_IT=1 and run the INBOX.-prefixed server on 1993)");
+        return;
+    }
+    let st = AppState::new(Db::memory());
+    let mut acct = account(0);
+    acct.imap_port = 1993;
+    acct.email = "tester5@localhost".into();
+    acct.username = "tester5@localhost".into();
+    acct.id = st.db.insert_account(&acct).unwrap();
+    secrets::set(&st.db, &secrets::password_key(acct.id), "secret123").unwrap();
+    st.refresh_folders(&acct).unwrap();
+    assert_eq!(st.db.folder_by_special(acct.id, "sent").unwrap().as_deref(), Some("INBOX.Sent"));
+
+    let folder = st.files_folder(&acct).unwrap();
+    assert_eq!(folder, "INBOX.Files");
+    assert_eq!(st.files_folder(&acct).unwrap(), "INBOX.Files"); // second call reuses it
+    let f = st.db.folders(acct.id).unwrap().into_iter().find(|f| f.special == "files").unwrap();
+    assert_eq!((f.display.as_str(), f.depth), ("Files", 0));
+
+    let item = crate::files::FileItem { name: "quote.pdf".into(), mime: "application/pdf".into(), data: b"%PDF cpanel".to_vec(), source: None };
+    let (added, skipped) = st.save_files(&acct, std::slice::from_ref(&item)).unwrap();
+    assert_eq!(added + skipped, 1);
+    assert_eq!(st.save_files(&acct, &[item]).unwrap(), (0, 1)); // deduped on the server
+
+    // a fresh install against the same mailbox finds the existing INBOX.Files
+    let st2 = AppState::new(Db::memory());
+    acct.id = st2.db.insert_account(&acct).unwrap();
+    secrets::set(&st2.db, &secrets::password_key(acct.id), "secret123").unwrap();
+    st2.refresh_folders(&acct).unwrap();
+    assert_eq!(st2.files_folder(&acct).unwrap(), "INBOX.Files");
 }

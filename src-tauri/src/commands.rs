@@ -1172,18 +1172,7 @@ pub async fn files_collect_recent(state: State<'_, Shared>, account_id: i64, day
     let st = state.inner().clone();
     blocking(move || {
         let acct = st.db.account(account_id)?;
-        let inbox = st.db.folder_by_special(account_id, "inbox")?.unwrap_or_else(|| "INBOX".into());
-        let since = chrono::Utc::now().timestamp() - days.clamp(1, 365) as i64 * 86_400;
-        let uids: Vec<u32> = st.db.list_messages(account_id, &inbox, 5000)?.into_iter().filter(|m| m.has_attach && m.date >= since).map(|m| m.uid).collect();
-        let mut prefs = st.db.account_prefs(account_id);
-        prefs.collect_files = true; // the button works even when automatic filing is off
-        let mut items = Vec::new();
-        for uid in uids {
-            if let Ok(raw) = st.raw_message(&acct, &inbox, uid) {
-                items.extend(crate::files::collectable(&raw, &prefs.collect_kinds));
-            }
-        }
-        st.save_files(&acct, &items).map(|(a, _)| a)
+        st.collect_recent(&acct, days)
     })
     .await
 }

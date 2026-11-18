@@ -1067,9 +1067,19 @@ fn special_of(name: &str, attrs: &[String]) -> &'static str {
         "trash" | "deleted items" | "deleted messages" | "bin" => "trash",
         "junk" | "spam" | "junk email" | "junk e-mail" | "bulk mail" => "junk",
         "archive" | "archives" => "archive",
-        // our Files folder (top level only, so a user's "Projects/Files" stays a normal folder)
-        "files" if !name.contains(['/', '.']) => "files",
+        // our Files folder: top level, or directly under INBOX on servers that require it
+        // (cPanel "INBOX.Files"); a user's "Projects/Files" stays a normal folder
+        "files" if is_files_path(name) => "files",
         _ => "",
+    }
+}
+
+fn is_files_path(name: &str) -> bool {
+    let parts: Vec<&str> = name.split(['/', '.']).collect();
+    match parts.as_slice() {
+        [_] => true,
+        [parent, _] => parent.eq_ignore_ascii_case("INBOX"),
+        _ => false,
     }
 }
 
@@ -1113,6 +1123,22 @@ mod tests {
     fn uid_sets() {
         assert_eq!(uid_set(&[10, 9, 1, 2, 3, 7]), "1:3,7,9:10");
         assert_eq!(uid_set(&[5]), "5");
+    }
+
+    #[test]
+    fn files_folder_under_inbox() {
+        let raw = vec![
+            ("INBOX".into(), ".".into(), vec![]),
+            ("INBOX.Sent".into(), ".".into(), vec![]),
+            ("INBOX.Files".into(), ".".into(), vec![]),
+            ("INBOX.Projects.Files".into(), ".".into(), vec![]),
+            ("INBOX.spam".into(), ".".into(), vec![]),
+        ];
+        let f = organize_folders(1, raw);
+        let files: Vec<_> = f.iter().filter(|(x, _)| x.special == "files").map(|(x, _)| (x.name.as_str(), x.display.as_str())).collect();
+        assert_eq!(files, [("INBOX.Files", "Files")]);
+        assert!(is_files_path("Files") && is_files_path("INBOX/Files") && !is_files_path("Projects/Files"));
+        assert!(!is_files_path("INBOX.Projects.Files"));
     }
 
     #[test]

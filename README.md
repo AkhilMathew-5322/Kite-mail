@@ -4,6 +4,12 @@ Kite Mail is a lightweight email client for **Windows, Linux and Android**. It's
 
 **Supported accounts:** Microsoft 365 (OAuth), Gmail (OAuth), and any provider that supports IMAP and SMTP.
 
+## What's new in 0.5.1 (Files folder on cPanel-style servers)
+
+- The **Files** folder now appears as soon as an account connects, and is filled once from attachments in the last 30 days of Inbox mail.
+- It now works on servers that keep every folder under `INBOX.` (cPanel, Courier, many shared hosts). There it's created as `INBOX.Files`; other mail apps show it as *Files* under Inbox.
+- If the server still refuses to create the folder, the error now includes the server's own reason.
+
 ## What's new in 0.5 (Files folder, Archive, conversations)
 - **Files folder:** a *Files* folder on your mail server, next to Inbox and Sent, that collects pictures, PDFs and Word files from your mail (Excel and PowerPoint optional, per account). Each file is a small message with the file attached, so the folder syncs to every device and also shows in Outlook, Thunderbird or a phone's mail app. Kite Mail shows it as a gallery with picture thumbnails and filters; files can be opened, saved, sent by email or deleted, added from the computer, or saved from any email with the new *Save to Files* button. Duplicates are skipped (checked on the server), logos inside emails and tiny pictures are ignored. Settings → Accounts → an account → *Files folder*, including "Collect from the last 30 days".
 - **Archive** (new tab): import **PST, MSG, EML, MBOX, Maildir** and Kite Mail backups – single files or whole folders – into a searchable archive kept apart from your accounts. Folder trees are kept, attachments included, duplicates skipped, progress shown (and stoppable) for big PST files. Full-text search across everything; reply, reply all or **forward with the original attachments** from any account; copy messages back into a mailbox; save as .eml. (OST files – Outlook's offline cache – can't be read; export a PST from Outlook instead.)
@@ -138,9 +144,9 @@ Every push to `main` builds the Windows installer, the Linux packages and the An
 
 **Permanent download links:** tag a version and GitHub creates a **Release** with every installer attached:
 ```bash
-git tag v0.5.0 && git push origin v0.5.0
+git tag v0.5.1 && git push origin v0.5.1
 ```
-You can also use **Releases → Draft a new release → Choose a tag → `v0.5.0`**.
+You can also use **Releases → Draft a new release → Choose a tag → `v0.5.1`**.
 
 ---
 
