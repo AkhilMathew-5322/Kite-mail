@@ -111,6 +111,7 @@ async function init() {
   applyTheme();
   try { const info = await invoke('app_info'); S.mobile = !!info.mobile; S.version = info.version; } catch (_) { /* desktop */ }
   document.body.classList.toggle('mobile', S.mobile);
+  await setupNativeBack();
   await loadNc();
   await loadS3();
   try {

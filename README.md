@@ -4,6 +4,14 @@ Kite Mail is a lightweight email client for **Windows, Linux and Android**. It's
 
 **Supported accounts:** Microsoft 365 (OAuth), Gmail (OAuth), and any provider that supports IMAP and SMTP.
 
+## What's new in 0.5.2 (Android back gesture, automatic releases)
+
+- **Android Back now works everywhere.** Swiping back (or the back button) closes the open message and returns to the list. It also closes the folder drawer, compose and the account sheet, goes from another folder to Inbox and from Contacts/Tasks/Settings to Mail. At the Inbox it shows "Press back again to exit". This uses Android's native back event, not WebView history.
+- **Slide an open message to the right** to go back to the list. Sideways-scrollable content such as wide tables keeps its own swipe.
+- The message reader no longer creates a history entry per email opened.
+- **GitHub Releases are published automatically** for every new version, with all installers attached.
+- Tauri updated to 2.12.7.
+
 ## What's new in 0.5.1 (Files folder on cPanel-style servers)
 
 - The **Files** folder now appears as soon as an account connects, and is filled once from attachments in the last 30 days of Inbox mail.
@@ -140,13 +148,23 @@ base64 -w0 kitemail.jks      # copy the output
 Keep `kitemail.jks` safe: future updates must be signed with the same key. Without these secrets, CI signs each build with a temporary key (`…-testkey.apk`): it installs fine, but to update you must uninstall the previous build first.
 
 ### GitHub Actions & releases
-Every push to `main` builds the Windows installer, the Linux packages and the Android APK. You can download them from the run's **Artifacts** for 90 days, and only signed-in users can do so.
+Every push to `main` builds the Windows installer, the Linux packages and the Android APK (run **Artifacts**, kept 90 days, sign-in needed).
 
-**Permanent download links:** tag a version and GitHub creates a **Release** with every installer attached:
-```bash
-git tag v0.5.1 && git push origin v0.5.1
-```
-You can also use **Releases → Draft a new release → Choose a tag → `v0.5.1`**.
+**Releases are automatic.** When `main` gets a new version number (`version` in `src-tauri/tauri.conf.json`), CI publishes a **Release** named after it (e.g. `v0.5.2`). It has every installer attached and the newest "What's new" section as its notes. Pushes that keep the same version only produce Artifacts. To rebuild an existing release, push its tag again (`git tag -f v0.5.2 && git push -f origin v0.5.2`) or publish it from **Releases** on github.com.
+
+### Android signing (needed for in-place updates)
+Android only installs an update over the existing app if both are signed with the **same key**. Without a saved key, CI signs each APK with a new throwaway key (file name ends in `-testkey`). You then have to uninstall the old app first, which removes its accounts. Do this once:
+
+1. Create a key (keep the file and password safe – losing them means users must reinstall). `keytool` comes with Java / Android Studio:
+   ```powershell
+   keytool -genkeypair -keystore kitemail.jks -alias kitemail -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Kite Mail"
+   ```
+2. Base64-encode it: PowerShell `[Convert]::ToBase64String([IO.File]::ReadAllBytes("kitemail.jks")) | Set-Clipboard`
+   (Linux: `base64 -w0 kitemail.jks`).
+3. On GitHub: **Settings → Secrets and variables → Actions → New repository secret**, three times:
+   `ANDROID_KEYSTORE_B64` (the base64 text), `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` (`kitemail`).
+
+From then on, every APK is signed with your key and installs over the previous one, keeping your accounts. (The first switch from a `-testkey` build still needs one uninstall.)
 
 ---
 

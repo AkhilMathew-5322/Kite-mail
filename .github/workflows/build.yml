@@ -128,19 +128,20 @@ jobs:
           KS_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
           mkdir -p dist
+          V=$(jq -r .version src-tauri/tauri.conf.json)
           cargo tauri android build --apk --target aarch64
           UNSIGNED=$(find src-tauri/gen/android/app/build/outputs/apk -name '*release-unsigned.apk' | head -1)
           BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
           "$BT/zipalign" -f -p 4 "$UNSIGNED" aligned.apk
           if [ -n "$KS_B64" ]; then
             echo "$KS_B64" | base64 -d > ks.jks
-            OUT="dist/KiteMail-${GITHUB_REF_NAME}-android-arm64.apk"
+            OUT="dist/KiteMail-v${V}-android-arm64.apk"
           else
             echo "::warning::No ANDROID_KEYSTORE_B64 secret – signing with a temporary key (see README → Android signing)"
             KS_PASS=$(openssl rand -hex 16); KS_ALIAS=kitemail
             keytool -genkeypair -keystore ks.jks -storepass "$KS_PASS" -keypass "$KS_PASS" -alias "$KS_ALIAS" \
               -keyalg RSA -keysize 2048 -validity 3650 -dname "CN=Kite Mail test build" >/dev/null
-            OUT="dist/KiteMail-${GITHUB_REF_NAME}-android-arm64-testkey.apk"
+            OUT="dist/KiteMail-v${V}-android-arm64-testkey.apk"
           fi
           KS_PASS="$KS_PASS" "$BT/apksigner" sign --ks ks.jks --ks-pass env:KS_PASS --ks-key-alias "$KS_ALIAS" --out "$OUT" aligned.apk
           rm -f ks.jks aligned.apk
@@ -152,23 +153,49 @@ jobs:
           name: kitemail-android
           path: dist/*.apk
 
-  # Push a tag like v0.3.0 -> a GitHub Release with every installer attached (permanent links).
+  # A GitHub Release with every installer attached (permanent download links). Made automatically
+  # the first time a new version (src-tauri/tauri.conf.json) lands on main; pushing a tag like
+  # v0.5.2 yourself, or publishing a Release on github.com, also (re)builds and attaches them.
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     needs: [desktop, android]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7
+      - name: Which version
+        id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then TAG="$GITHUB_REF_NAME"; else TAG="v$(jq -r .version src-tauri/tauri.conf.json)"; fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" != refs/tags/* ]] && gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::notice::Release $TAG already exists – bump the version in tauri.conf.json to publish a new one"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+          # release notes: the newest "What's new" section of the README
+          awk '/^## What.s new/{n++} n==1' README.md > notes.md
+          cat notes.md
       - uses: actions/download-artifact@v8
+        if: steps.v.outputs.publish == 'true'
         with:
           path: artifacts
       - name: Collect files
+        if: steps.v.outputs.publish == 'true'
         run: |
           mkdir release
           find artifacts -type f \( -name '*.exe' -o -name '*.msi' -o -name '*.deb' -o -name '*.AppImage' -o -name '*.apk' \) -exec cp {} release/ \;
           ls -la release
       - uses: softprops/action-gh-release@v3
+        if: steps.v.outputs.publish == 'true'
         with:
-          tag_name: ${{ github.ref_name }}
-          files: release/*
+          tag_name: ${{ steps.v.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Kite Mail ${{ steps.v.outputs.tag }}
+          body_path: notes.md
           generate_release_notes: true
+          make_latest: true
+          files: release/*
           fail_on_unmatched_files: true

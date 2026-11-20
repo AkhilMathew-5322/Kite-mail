@@ -292,18 +292,49 @@ function mobileOnboarding() {
   box.addEventListener('scroll', () => { if (mode !== 'pull' && ptr.style.height) reset(); }, { passive: true });
 })();
 
-// ------------------------------------------------------------------ Android back button (history-driven)
+// ------------------------------------------------------------------ Back (Android gesture/button, browser history)
+// On Android the native back event is used (Tauri app plugin), so nothing depends on WebView
+// history. Elsewhere layers are mirrored as history entries so Back/popstate closes them.
 const layers = [];
+let nativeBack = null; // listener handle while the native back handler is registered
 function pushLayer(name, close) {
   layers.push({ name, close });
-  history.pushState({ layer: name }, '');
+  if (!nativeBack) history.pushState({ layer: name }, '');
 }
 /** Closes a layer that was dismissed by the UI (not by Back): keeps history in step. Returns true if it was open. */
 function dropLayer(name) {
   if (!layers.length || layers[layers.length - 1].name !== name) return false;
+  if (nativeBack) { layers.pop().close(); return true; }
   history.back(); // triggers popstate -> close() (idempotent)
   return true;
 }
+
+/** One Back step: innermost screen first, then dialog, tab, folder; at the Inbox, press twice to leave. */
+function backStep() {
+  const top = layers.pop();
+  if (top) { top.close(); return; }
+  const dlg = [...document.querySelectorAll('dialog[open]')].pop();
+  if (dlg) { dlg.close(); return; }
+  if (S.tab !== 'mail') { switchTab('mail'); return; }
+  const cur = S.cur;
+  if (cur && folderOf(cur.accountId, cur.folder)?.special !== 'inbox') {
+    const inbox = (S.folders[cur.accountId] || []).find((f) => f.special === 'inbox');
+    if (inbox) { selectFolder(cur.accountId, inbox.name); return; }
+  }
+  // Let the next press reach Android (app goes to the background), for 2 seconds.
+  toast('Press back again to exit');
+  const h = nativeBack;
+  nativeBack = null;
+  h?.unregister?.();
+  setTimeout(setupNativeBack, 2000);
+}
+
+async function setupNativeBack() {
+  const app = window.__TAURI__?.app;
+  if (!S.mobile || nativeBack || !app?.onBackButtonPress) return;
+  try { nativeBack = await app.onBackButtonPress(() => backStep()); } catch (_) { nativeBack = null; /* fall back to history */ }
+}
+
 window.addEventListener('popstate', () => {
   const top = layers.pop();
   if (top) top.close();

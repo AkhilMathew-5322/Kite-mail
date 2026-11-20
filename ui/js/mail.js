@@ -493,7 +493,7 @@ function showReader(view) {
   S.view = view;
   $('#reader-empty').hidden = !!view;
   $('#reader-content').hidden = !view;
-  if (!view) { $('#r-body').srcdoc = ''; $('#r-thread').hidden = true; $('#app').classList.remove('reading'); return; }
+  if (!view) { const f = $('#r-body'); if (f.hasAttribute('srcdoc')) f.replaceWith(freshFrame(f)); $('#r-thread').hidden = true; $('#app').classList.remove('reading'); return; }
   const s = view.summary;
   $('#r-subject').textContent = s.subject || '(no subject)';
   $('#r-from').textContent = s.from_name || s.from_addr;
@@ -564,6 +564,10 @@ function renderMailFrame(frame, v, allowRemote, onScams) {
     ${darkify ? 'html{filter:invert(.92) hue-rotate(180deg)}img,video,picture,[style*="background-image"]{filter:invert(1) hue-rotate(180deg)}' : ''}</style>
     </head><body>${body}</body></html>`;
   frame.parentElement.classList.toggle('darkified', darkify);
+  // A fresh iframe per message: re-assigning srcdoc on the same frame adds a history entry,
+  // which made Android's Back step through old email bodies instead of closing the reader.
+  const old = frame;
+  frame = freshFrame(old);
   frame.onload = () => {
     const d = frame.contentDocument;
     if (!d) return;
@@ -571,6 +575,7 @@ function renderMailFrame(frame, v, allowRemote, onScams) {
     fit();
     setTimeout(fit, 300);
     d.querySelectorAll('img').forEach((img) => img.addEventListener('load', fit));
+    if (frame.id === 'r-body') swipeBack(d, inScrolledX);
     const scams = S.settings.scam_warn ? scanForScam(d, v) : [];
     onScams(scams);
     d.addEventListener('click', (e) => {
@@ -597,6 +602,15 @@ function renderMailFrame(frame, v, allowRemote, onScams) {
     });
   };
   frame.srcdoc = doc;
+  old.replaceWith(frame); // srcdoc set before insertion = initial load, no history entry
+}
+
+/** An empty copy of a message iframe (same id, sandbox, title) that has never navigated. */
+function freshFrame(frame) {
+  const f = frame.cloneNode(false);
+  f.removeAttribute('srcdoc');
+  f.removeAttribute('style');
+  return f;
 }
 
 /** Mirrors is_dangerous_file() in commands.rs (the backend refuses to open these). */
@@ -815,7 +829,30 @@ $('#bulk').addEventListener('click', (e) => {
 });
 
 $('#btn-load-images').onclick = () => { S.allowRemote = true; renderBody(); };
-$('#btn-back').onclick = () => { if (!dropLayer('reader')) $('#app').classList.remove('reading'); };
+const closeReader = () => { if (!dropLayer('reader')) $('#app').classList.remove('reading'); };
+$('#btn-back').onclick = closeReader;
+
+/** Phone: slide an open message to the right to go back to the list. */
+function swipeBack(el, scrolledX) {
+  let x0 = 0, y0 = 0, on = false;
+  el.addEventListener('touchstart', (e) => {
+    const app = $('#app');
+    on = e.touches.length === 1 && app.classList.contains('narrow') && app.classList.contains('reading') && !scrolledX(e.target);
+    x0 = e.touches[0].clientX; y0 = e.touches[0].clientY;
+  }, { passive: true });
+  el.addEventListener('touchend', (e) => {
+    if (!on) return;
+    on = false;
+    const t = e.changedTouches[0], dx = t.clientX - x0, dy = Math.abs(t.clientY - y0);
+    if (dx > 90 && dy < dx * 0.4) closeReader();
+  }, { passive: true });
+}
+/** True when the touch starts inside something scrolled sideways (wide tables keep their own swipe). */
+const inScrolledX = (node) => {
+  for (let n = node; n && n.nodeType === 1; n = n.parentElement) if (n.scrollLeft > 0) return true;
+  return false;
+};
+swipeBack($('#reader'), inScrolledX);
 $('#btn-drawer').onclick = () => {
   if ($('#app').classList.toggle('drawer')) pushLayer('drawer', () => $('#app').classList.remove('drawer'));
   else dropLayer('drawer');
