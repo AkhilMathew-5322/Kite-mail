@@ -17,6 +17,7 @@ mod oauth;
 mod pair;
 mod s3;
 mod push;
+mod qr;
 mod secrets;
 mod smtp;
 
@@ -29,8 +30,6 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init());
-    #[cfg(mobile)]
-    let builder = builder.plugin(tauri_plugin_barcode_scanner::init());
     builder
         .setup(|app| {
             std::thread::spawn(commands::clean_temp_attachments);
@@ -52,7 +51,7 @@ pub fn run() {
                 let _ = app.notification().request_permission();
             }
             #[cfg(target_os = "linux")]
-            enable_linux_spellcheck(app);
+            enable_linux_webview_features(app);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -136,25 +135,39 @@ pub fn run() {
             commands::pair_start,
             commands::pair_import,
             commands::pair_stop,
+            commands::qr_decode,
             commands::file_sizes,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Kite Mail");
 }
 
-/// WebKitGTK ships with spell checking off; turn it on for the system language.
-/// (WebView2 on Windows and Android's WebView spell-check text fields natively.)
+/// WebKitGTK ships with spell checking and the camera (getUserMedia) off: turn on spell
+/// checking for the system language, and the camera for "Scan QR code". Only Kite Mail's own UI
+/// runs scripts (email bodies are script-less sandboxed frames), so camera requests are allowed.
+/// (WebView2 on Windows and Android's WebView do both natively, asking the user for the camera.)
 #[cfg(target_os = "linux")]
-fn enable_linux_spellcheck(app: &tauri::App) {
-    use webkit2gtk::{WebContextExt, WebViewExt};
+fn enable_linux_webview_features(app: &tauri::App) {
+    use webkit2gtk::{glib::prelude::Cast, PermissionRequestExt, SettingsExt, UserMediaPermissionRequest, WebContextExt, WebViewExt};
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.with_webview(|wv| {
-            if let Some(ctx) = wv.inner().context() {
+            let view = wv.inner();
+            if let Some(ctx) = view.context() {
                 ctx.set_spell_checking_enabled(true);
                 let lang = std::env::var("LANG").ok().and_then(|l| l.split('.').next().map(String::from)).filter(|l| l.len() >= 2 && l != "C");
                 let langs = [lang.unwrap_or_else(|| "en_US".into())];
                 ctx.set_spell_checking_languages(&langs.iter().map(String::as_str).collect::<Vec<_>>());
             }
+            if let Some(settings) = WebViewExt::settings(&view) {
+                settings.set_enable_media_stream(true);
+            }
+            view.connect_permission_request(|_, req| {
+                if let Some(media) = req.downcast_ref::<UserMediaPermissionRequest>() {
+                    media.allow();
+                    return true;
+                }
+                false
+            });
         });
     }
 }

@@ -138,7 +138,7 @@ function sectionHtml(sec) {
       ${ncCardHtml()}
       <section class="card"><p class="muted small">Backups are zip files with one mbox file per folder – they open in Kite Mail (Accounts → an account → Restore) and in Thunderbird (ImportExportTools NG). Large attachments go to S3 when it is set up for links, otherwise to Nextcloud.</p></section>`;
     case 'devices':
-      return `<header class="sec-head"><h3>Devices</h3><p class="muted">Copy your setup to a phone</p></header>${pairCardHtml()}`;
+      return `<header class="sec-head"><h3>Devices</h3><p class="muted">Copy your setup between computers and phones</p></header>${pairCardHtml()}`;
     case 'calling': {
       const callMode = !st.call_template ? 'tel' : st.call_template.includes('/webclient') ? '3cx' : 'custom';
       return `<header class="sec-head"><h3>Calling</h3><p class="muted">Dial numbers from contacts and emails</p></header>

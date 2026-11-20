@@ -1,6 +1,6 @@
 [package]
 name = "kitemail"
-version = "0.5.2"
+version = "0.5.3"
 description = "Lightweight desktop email client (IMAP/SMTP, Microsoft 365 & Gmail OAuth)"
 edition = "2021"
 
@@ -48,6 +48,7 @@ zip = { version = "9", default-features = false, features = ["deflate"] }
 roxmltree = "0.20"
 aes-gcm = "0.10"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+rqrr = { version = "0.11", default-features = false }   # reads QR codes (camera frames / pictures), pure Rust
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # keyring's own "crypto-rust" feature also names its unused async backend (zbus 4), which
@@ -56,9 +57,6 @@ dbus-secret-service = { version = "4.1", features = ["crypto-rust"] }
 webkit2gtk = "2.0"
 
 # Android has no system OpenSSL: build it from source for IMAP/SMTP TLS.
-[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
-tauri-plugin-barcode-scanner = "2"
-
 [target.'cfg(target_os = "android")'.dependencies]
 native-tls = { version = "0.2", features = ["vendored"] }
 

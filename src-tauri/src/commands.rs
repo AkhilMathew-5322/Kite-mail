@@ -764,6 +764,14 @@ pub async fn pair_stop(state: State<'_, Shared>) -> Result<(), String> {
     Ok(())
 }
 
+/// Decodes a QR code from a camera frame or picture: base64 of 8-bit grayscale pixels.
+#[tauri::command]
+pub async fn qr_decode(pixels: String, width: usize) -> Result<Option<String>, String> {
+    use base64::Engine;
+    let px = base64::engine::general_purpose::STANDARD.decode(pixels).map_err(|e| e.to_string())?;
+    blocking(move || Ok(crate::qr::decode_gray(&px, width))).await
+}
+
 #[tauri::command]
 pub async fn pair_import(state: State<'_, Shared>, code: String) -> Result<crate::pair::ImportReport, String> {
     let st = state.inner().clone();

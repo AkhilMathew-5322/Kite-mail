@@ -19,7 +19,7 @@
 [data-dark="1"] { --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35); --hover: color-mix(in srgb, var(--fg) 8%, transparent); }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
-html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); overflow: hidden; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); overflow: hidden; overscroll-behavior: none; /* no browser swipe-back / bounce: the app handles its own swipes */ }
 body { transition: background .25s, color .25s; -webkit-font-smoothing: antialiased; }
 button, input, select, textarea { font: inherit; color: inherit; }
 .ic { flex-shrink: 0; vertical-align: middle; }
@@ -618,3 +618,14 @@ body.mobile .fc-actions { display: flex; opacity: .92; }
 #app.files-mode:not(.narrow) #list-pane { grid-column: 3 / -1; }
 #app.files-mode:not(.narrow) #reader { display: none; }
 #app.files-mode #files-grid { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); }
+
+/* QR scanner */
+.qr-dlg .qr-view { position: relative; aspect-ratio: 4 / 3; max-height: 56vh; background: #000; border-radius: 12px; overflow: hidden; display: grid; place-items: center; }
+.qr-dlg .qr-view.off { aspect-ratio: auto; height: 120px; background: var(--hover); }
+.qr-dlg .qr-view.off video, .qr-dlg .qr-view.off .qr-aim { display: none; }
+.qr-dlg video { width: 100%; height: 100%; object-fit: cover; }
+.qr-dlg video.mirror { transform: scaleX(-1); }
+.qr-dlg .qr-aim { position: absolute; width: min(62%, 260px); aspect-ratio: 1; border: 3px solid rgba(255, 255, 255, .9); border-radius: 16px; box-shadow: 0 0 0 100vmax rgba(0, 0, 0, .35); pointer-events: none; }
+.qr-dlg .qr-msg.bad { color: var(--danger); }
+.acct-scan { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 12px; }
+.acct-scan .grow { flex: 1; }

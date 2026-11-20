@@ -112,23 +112,20 @@ async function ncSaveOption(patch) {
 
 // ------------------------------------------------------------------ pairing card
 function pairCardHtml() {
-  if (S.mobile) {
-    return `<section class="card pair-card">
-      <h3>${icon('qr', 18)} Copy setup from your computer</h3>
-      <p class="muted small">On the computer open Kite Mail → Settings → <b>Pair a phone</b>, then scan the code. Both devices must be on the same Wi-Fi.</p>
-      <div class="set-actions">
-        ${window.__TAURI__.barcodeScanner ? `<button class="primary" id="pair-scan">${icon('qr', 16)} Scan QR code</button>` : ''}
-      </div>
-      <div class="set-row"><span>Or paste code</span><input id="pair-code" placeholder="kitemail://pair?…"/><button class="ghost" id="pair-go">Import</button></div>
-    </section>`;
-  }
   return `<section class="card pair-card">
-    <h3>${icon('qr', 18)} Pair a phone</h3>
-    <p class="muted small">Copies your accounts (with sign-ins), contacts, tasks, themes, signatures and Nextcloud connection to Kite Mail on Android.
-      Everything is encrypted with a key that exists only inside the QR code. The code works for 10 minutes on your local network – for one or several phones,
-      or to re-pair the same phone – until you press Stop. Mail itself syncs from your mail servers.</p>
-    <div id="pair-area"><button class="primary" id="pair-start">${icon('qr', 16)} Show pairing QR code</button></div>
-  </section>`;
+      <h3>${icon('qr', 18)} Copy setup from another device</h3>
+      <p class="muted small">On the other computer or phone open Kite Mail → Settings → Devices → <b>Show pairing QR code</b>, then scan it here
+        (camera, or a screenshot of the code). Both devices must be on the same network.</p>
+      <div class="set-actions"><button class="primary" id="pair-scan">${icon('qr', 16)} Scan QR code</button></div>
+      <div class="set-row"><span>Or paste code</span><input id="pair-code" placeholder="kitemail://pair?…"/><button class="ghost" id="pair-go">Import</button></div>
+    </section>
+    <section class="card pair-card">
+      <h3>${icon('qr', 18)} Pair another device</h3>
+      <p class="muted small">Copies your accounts (with sign-ins), contacts, tasks, themes, signatures and Nextcloud connection to Kite Mail on a phone or another computer.
+        Everything is encrypted with a key that exists only inside the QR code. The code works for 10 minutes on your local network – for one or several devices –
+        until you press Stop. Mail itself syncs from your mail servers.</p>
+      <div id="pair-area"><button class="primary" id="pair-start">${icon('qr', 16)} Show pairing QR code</button></div>
+    </section>`;
 }
 
 let pairTimer = null;
@@ -141,8 +138,8 @@ function pairWire() {
       $('#pair-area').innerHTML = `<div class="pair-box">
           <div class="qr">${info.qr_svg}</div>
           <div class="pair-side">
-            <b>Scan with Kite Mail on your phone</b>
-            <p class="muted small">Phone app → Settings → Copy setup from your computer → Scan QR code.<br>${info.accounts} account(s) will be copied.</p>
+            <b>Scan with Kite Mail on the other device</b>
+            <p class="muted small">There: Add account → <b>Scan QR code</b> (or Settings → Devices → Scan QR code).<br>${info.accounts} account(s) will be copied.</p>
             <p class="small" id="pair-status">${icon('clock', 14)} Waiting for a phone…</p>
             <p class="small muted" id="pair-left"></p>
             <div class="set-actions"><button class="ghost danger" id="pair-stop">${icon('x', 15)} Stop</button>
@@ -183,18 +180,17 @@ function onPairEvent(e) {
 }
 
 async function scanPairing() {
-  const bs = window.__TAURI__.barcodeScanner;
-  if (!bs) { toast('Camera scanning is only available in the phone app', 'error'); return; }
-  try {
-    const perm = await bs.checkPermissions().catch(() => 'prompt');
-    if (perm !== 'granted') await bs.requestPermissions();
-    const res = await bs.scan({ windowed: false, formats: ['QR_CODE'] });
-    if (res?.content) importPairing(res.content);
-  } catch (e) { toast(errText(e), 'error'); }
+  const code = await scanQr({
+    title: 'Scan pairing code',
+    hint: 'On the other device: Settings → Devices → <b>Show pairing QR code</b>.',
+    check: pairCheck,
+  });
+  if (code) importPairing(code);
 }
 
 async function importPairing(code) {
   if (!code || !code.trim()) { toast('Scan or paste the pairing code first', 'error'); return; }
+  if (!isPairCode(code)) { toast(pairCheck(code), 'error'); return; }
   try {
     const r = await withBusy('Copying setup…', () => invoke('pair_import', { code: code.trim() }));
     toast(`Done · ${r.accounts} account(s)${r.skipped_accounts ? ` (${r.skipped_accounts} already here)` : ''}, ${r.contacts} contacts, ${r.todos} tasks${r.nextcloud ? ', Nextcloud connected' : ''}`, 'ok');
@@ -227,8 +223,8 @@ function mobileOnboarding() {
   d.innerHTML = `<form method="dialog">
     <div class="ob-logo">${icon('kite', 34)}</div>
     <h3>Welcome to Kite Mail</h3>
-    <p>Already using Kite Mail on your computer? Copy everything in one scan.</p>
-    <button value="scan" class="primary wide">${icon('qr', 16)} Scan code from computer</button>
+    <p>Already using Kite Mail on a computer or another phone? Copy everything in one scan.</p>
+    <button value="scan" class="primary wide">${icon('qr', 16)} Scan code from other device</button>
     <button value="paste" class="ghost wide">Paste pairing code</button>
     <button value="manual" class="ghost wide">Add an account manually</button></form>`;
   document.body.appendChild(d);

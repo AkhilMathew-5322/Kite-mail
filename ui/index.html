@@ -236,6 +236,8 @@
   <dialog id="account-dlg" class="sheet narrow">
     <form method="dialog" id="account-form">
       <header><strong>Add account</strong><span class="grow"></span><button type="button" class="icon" id="acct-close"><i data-icon="x"></i></button></header>
+      <div class="acct-scan"><span class="grow small">Already set up on another computer or phone? <span class="muted">Copy its accounts in one scan.</span></span>
+        <button type="button" class="ghost" id="acct-scan"><i data-icon="qr"></i> Scan QR code</button></div>
       <div class="seg wide" id="acct-tabs">
         <button type="button" data-kind="m365" class="active">Microsoft 365</button>
         <button type="button" data-kind="gmail">Gmail</button>
@@ -276,6 +278,7 @@
   <script src="js/files.js"></script>
   <script src="js/archive.js"></script>
   <script src="js/settings.js"></script>
+  <script src="js/qr.js"></script>
   <script src="js/sync.js"></script>
   <script src="js/main.js"></script>
 </body>

@@ -4,6 +4,13 @@ Kite Mail is a lightweight email client for **Windows, Linux and Android**. It's
 
 **Supported accounts:** Microsoft 365 (OAuth), Gmail (OAuth), and any provider that supports IMAP and SMTP.
 
+## What's new in 0.5.3 (QR scanning everywhere)
+
+- **The Android app no longer closes when scanning a QR code.** The native scanner plugin is replaced by Kite Mail's own scanner. That also drops CameraX and ML Kit from the app.
+- **QR scanning on Windows, Linux and Android.** Use **Add account → Scan QR code**, or Settings → Devices, with the camera (webcam on a laptop). You can also choose a screenshot/photo of the code or paste one (Ctrl+V).
+- **Pairing works in every direction**: computer → phone, phone → computer, computer → computer. Every device can show a pairing code and scan one.
+- Swipes can no longer trigger the WebView's own "go back a page" navigation (touchscreen laptops).
+
 ## What's new in 0.5.2 (Android back gesture, automatic releases)
 
 - **Android Back now works everywhere.** Swiping back (or the back button) closes the open message and returns to the list. It also closes the folder drawer, compose and the account sheet, goes from another folder to Inbox and from Contacts/Tasks/Settings to Mail. At the Inbox it shows "Press back again to exit". This uses Android's native back event, not WebView history.
@@ -61,7 +68,7 @@ Not included on purpose: chat (Thunderbird's IRC/XMPP), an add-on store, and DNS
 | Area | What you get |
 |---|---|
 | **Android app** | Phone layout with a bottom tab bar, folder drawer and full-screen reader and compose. Swipe left on a message to **archive** it and swipe right to mark it **read/unread**. Pull down to refresh, and the phone's Back button works throughout. |
-| **QR pairing** | On the computer, go to Settings → **Pair a phone**. The phone scans the code and gets all accounts (already signed in), contacts, tasks, themes, signatures and the Nextcloud connection. The data is encrypted with AES-256-GCM using a one-time key that exists only in the QR code. It can be downloaded once, within 10 minutes, on your local network. Mail then syncs from your mail servers. |
+| **QR pairing** | On any device, go to Settings → **Devices → Show pairing QR code**. Another computer or phone scans it (camera or a screenshot) and gets all accounts (already signed in), contacts, tasks, themes, signatures and the Nextcloud connection. The data is encrypted with AES-256-GCM using a one-time key that exists only in the QR code. It can be downloaded once, within 10 minutes, on your local network. Mail then syncs from your mail servers. |
 | **Nextcloud contacts** | Two-way CardDAV sync. Fields that Kite Mail doesn't manage (extra phone numbers, addresses, birthdays, photos) are preserved. |
 | **Nextcloud tasks** | Two-way CalDAV sync with Nextcloud Tasks. Due dates include an alarm, so your phone reminds you too. Categories and subtasks are preserved. |
 | **Backups to Nextcloud** | Automatic daily or weekly backup of every account to a Nextcloud folder, keeping the last N backups. There's also a "To Nextcloud" button for an immediate backup. |
@@ -222,13 +229,16 @@ If a sign-in expires, an ⚠ and a **Reconnect** button appear next to the accou
 Contacts and tasks sync automatically every 15 minutes and a few seconds after each change. Use **Sync now** for an immediate sync.
 If you edit the same contact on two devices at once, the server's version wins. Deletions sync in both directions.
 
-## 6. Pairing a phone
-1. Install the APK on the phone and open Kite Mail.
-2. On the computer, go to **Settings → Pair a phone → Show pairing QR code**.
-3. On the phone, tap **Scan code from computer**. Both devices must be on the **same Wi-Fi**.
+## 6. Pairing devices (QR code)
+Copy your whole setup from one device to another – computer → phone, phone → computer, or computer → computer.
+1. On the device that already has your accounts, go to **Settings → Devices → Show pairing QR code**.
+2. On the new device, choose **Add account → Scan QR code** (or Settings → Devices → Scan QR code; on a new phone, **Scan code from other device**). Both devices must be on the **same network**.
+3. Point the camera at the code. No camera, or the code is on the same screen? Choose **Choose picture** and pick a screenshot/photo of it, or paste a screenshot (Ctrl+V).
 4. Done. Your accounts work without signing in again, and mail downloads from the servers.
 
-Can't scan? Choose "Can't scan? Show code" on the computer and paste the code into the phone (Settings → Copy setup from your computer).
+Can't scan? Choose "Can't scan? Show code" and paste the code into **Settings → Devices → Or paste code**.
+
+The scanner runs inside Kite Mail on every platform: camera preview through the system WebView, QR decoding in Rust (`rqrr`). The camera is used only while the scanner is open.
 
 ## Project layout
 ```

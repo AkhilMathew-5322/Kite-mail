@@ -559,7 +559,7 @@ function renderMailFrame(frame, v, allowRemote, onScams) {
   const body = v.html ? cleanEmailHtml(v.html) : `<pre style="white-space:pre-wrap;font-family:inherit;margin:0">${esc(v.text)}</pre>`;
   const doc = `<!doctype html><html><head><meta charset="utf-8">
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${imgSrc}; style-src 'unsafe-inline'; font-src data:">
-    <style>html{background:#fff}body{font-family:"Segoe UI",system-ui,sans-serif;font-size:14px;line-height:1.5;color:#1d2330;margin:0;padding:4px 2px 24px;overflow-wrap:anywhere}
+    <style>html{background:#fff;overscroll-behavior:none}body{font-family:"Segoe UI",system-ui,sans-serif;font-size:14px;line-height:1.5;color:#1d2330;margin:0;padding:4px 2px 24px;overflow-wrap:anywhere}
     img{max-width:100%;height:auto}blockquote{border-left:3px solid #ccd;margin:0 0 0 4px;padding-left:12px;color:#555}a{color:#3b5bdb}
     ${darkify ? 'html{filter:invert(.92) hue-rotate(180deg)}img,video,picture,[style*="background-image"]{filter:invert(1) hue-rotate(180deg)}' : ''}</style>
     </head><body>${body}</body></html>`;
@@ -933,6 +933,7 @@ function openAccountDialog() {
 }
 $('#btn-add-account').onclick = openAccountDialog;
 $('#acct-close').onclick = () => $('#account-dlg').close();
+$('#acct-scan').onclick = () => scanPairing();
 $('#a-smtp-sec').onchange = (e) => { $('#a-smtp-port').value = { ssl: 465, starttls: 587, none: 25 }[e.target.value]; };
 
 $('#acct-save').onclick = async () => {
