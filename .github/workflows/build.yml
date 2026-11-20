@@ -150,7 +150,7 @@ jobs:
           fi
           KS_PASS="$KS_PASS" "$BT/apksigner" sign --ks ks.jks --ks-pass env:KS_PASS --ks-key-alias "$KS_ALIAS" --out "$OUT" aligned.apk
           rm -f ks.jks aligned.apk
-          "$BT/apksigner" verify "$OUT"
+          "$BT/apksigner" verify --print-certs "$OUT" | grep -i "SHA-256"
           ls -la dist
           unzip -lv "$OUT" | sort -k1 -n -r | head -6
       - uses: actions/upload-artifact@v7

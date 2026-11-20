@@ -4,6 +4,10 @@ Kite Mail is a lightweight email client for **Windows, Linux and Android**. It's
 
 **Supported accounts:** Microsoft 365 (OAuth), Gmail (OAuth), and any provider that supports IMAP and SMTP.
 
+## What's new in 0.5.4 (permanently signed Android app)
+
+- The Android APK is now signed with the project's permanent key. From this version on, updates install over the previous one and keep your accounts. Moving from a `-testkey` build needs one last uninstall.
+
 ## What's new in 0.5.3 (QR scanning everywhere)
 
 - **The Android app no longer closes when scanning a QR code.** The native scanner plugin is replaced by Kite Mail's own scanner. That also drops CameraX and ML Kit from the app.
