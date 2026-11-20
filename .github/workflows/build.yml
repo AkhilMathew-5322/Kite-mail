@@ -123,7 +123,7 @@ jobs:
           cp -r src-tauri/android/res/. "$RES/"
           ls "$RES"/mipmap-anydpi-v26
       # Always an optimised release build (stripped, LTO, size-optimised Rust; R8-shrunk Java) –
-      # a debug build is ~10x bigger. Signed with your key when the secrets are set (see README);
+      # a debug build is ~10x bigger. Signed with your key when the secrets are set (see docs/DEVELOPERS.md);
       # otherwise with a throw-away key made for this build (installs fine, but each such build
       # must replace the previous one by uninstalling it first).
       - name: Build APK
@@ -142,7 +142,7 @@ jobs:
             echo "$KS_B64" | base64 -d > ks.jks
             OUT="dist/KiteMail-v${V}-android-arm64.apk"
           else
-            echo "::warning::No ANDROID_KEYSTORE_B64 secret – signing with a temporary key (see README → Android signing)"
+            echo "::warning::No ANDROID_KEYSTORE_B64 secret – signing with a temporary key (see docs/DEVELOPERS.md → Android signing)"
             KS_PASS=$(openssl rand -hex 16); KS_ALIAS=kitemail
             keytool -genkeypair -keystore ks.jks -storepass "$KS_PASS" -keypass "$KS_PASS" -alias "$KS_ALIAS" \
               -keyalg RSA -keysize 2048 -validity 3650 -dname "CN=Kite Mail test build" >/dev/null
@@ -180,8 +180,8 @@ jobs:
           else
             echo "publish=true" >> "$GITHUB_OUTPUT"
           fi
-          # release notes: the newest "What's new" section of the README
-          awk '/^## What.s new/{n++} n==1' README.md > notes.md
+          # release notes: the newest version section of docs/CHANGELOG.md
+          awk '/^## /{n++} n==1' docs/CHANGELOG.md > notes.md
           cat notes.md
       - uses: actions/download-artifact@v8
         if: steps.v.outputs.publish == 'true'

@@ -139,6 +139,7 @@ function scanQr({ title = 'Scan QR code', hint = '', check = () => '' } = {}) {
       if (item) { e.preventDefault(); fromFile(item.getAsFile()); }
     });
     d.showModal();
+    document.activeElement?.blur(); // no focus ring on the close button when it opens
     pushLayer('qr', () => finish(null));
     start();
   });
